@@ -82,6 +82,10 @@ class LM:
                                    {"X-Requested-With": "XMLHttpRequest"})
         if st != 200:
             sys.exit(f"{module}/{action}: HTTP {st}")
+        # some endpoints (e.g. objects/check, trends/delete) answer 200 with an
+        # empty body on success; treat that as an empty result, not a crash.
+        if not body.strip():
+            return {}
         return json.loads(body)
 
     def login(self):

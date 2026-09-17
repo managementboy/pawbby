@@ -1,0 +1,3 @@
+# LF everywhere: the LM stores LF (lm.py push refuses CR) and bash scripts
+# break with CRLF. Overrides core.autocrlf on Windows clones.
+* text=auto eol=lf

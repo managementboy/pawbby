@@ -44,7 +44,12 @@ All are **virtual** objects — 32/x is outside the KNX standard range.
 
 ## Configuration
 
-Device id, local key and IP live at the top of `src/pawbby_resident.lua`.
+Copy `.env.example` to `.env` (git-ignored) and fill in the LM login and the
+Tuya device id and local key. The repo only holds `${TUYA_ID}`/`${TUYA_KEY}`
+placeholders; `tools/deploy.sh` fills them in when it saves to the LM. The
+box IP is at the top of `src/pawbby_resident.lua`. Before the first commit
+in a clone: `cp tools/pre-commit .git/hooks/pre-commit`.
+
 The local key is obtained once from the Tuya developer platform
 (Cloud project, linked app account, Query Device Details in Bulk).
 

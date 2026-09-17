@@ -61,7 +61,7 @@ grp = {
   getvalue = function(ga) return objects[ga] end,
   write = function(ga, v) objects[ga] = v end,
   update = function(ga, v) objects[ga] = v end,
-  create = function(o) if objects[o.address] == nil then objects[o.address] = false end end,
+  create = function(o) end,   -- like the LM: a created object has no value
 }
 storage = { get = function(k) return store[k], 'x' end,  -- 2nd value like LM
             set = function(k, v) store[k] = v end }
@@ -233,5 +233,14 @@ objects['32/3/12'] = true
 run({ idle, idle, idle, idle, idle, idle, idle, idle })
 check(#writes == 2 and logged('clean command: no clean state within 30 s'), 'no-reaction logged')
 dump('clean now')
+
+-------------------------------------------- 5. new objects get a value --
+world()
+run({ idle })
+for _, ga in ipairs({ '32/3/1', '32/3/2', '32/3/7', '32/3/12', '32/3/16', '32/3/18' }) do
+  check(objects[ga] ~= nil, ga .. ' has an initial value')
+end
+check(objects['32/3/16'] == 0 and objects['32/3/18'] == 0 and objects['32/3/2'] == '',
+  'initial values match the datatype')
 
 print('ALL CHECKS PASSED')

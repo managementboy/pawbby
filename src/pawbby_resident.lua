@@ -92,13 +92,18 @@ local OBJECTS = {
   { ga = GA.empty,    dt = 1,  name = 'Pawbby Empty (DUMP)' },
 }
 
--- create any object that does not exist yet; runs once per LM boot
+--[[ Create any object that does not exist yet; runs on script start. A new
+     object has no value at all until something writes it (the object list
+     shows 0, but Mosaic will not offer it), so give it a neutral one. ]]
+local INITIAL = { [1] = false, [5] = 0, [9] = 0, [16] = '' }
+
 local function ensureobjects()
   for _, o in ipairs(OBJECTS) do
     if not grp.find(o.ga) then
       local okc, err = pcall(grp.create, {
         address = o.ga, name = o.name, datatype = o.dt, units = o.units,
       })
+      if okc and INITIAL[o.dt] ~= nil then grp.write(o.ga, INITIAL[o.dt]) end
       log('pawbby: create ' .. o.ga .. ' ' .. o.name .. ' -> ' .. tostring(okc and 'ok' or err))
     end
   end

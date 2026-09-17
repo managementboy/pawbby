@@ -3,7 +3,8 @@
   Requires user library "tuya34".
 
   Local Tuya v3.4 link to the PAWBBY litter box. Publishes state to KNX
-  objects under 32/3/* and accepts commands on 32/3/10 and 32/3/11.
+  objects under 32/3/* and accepts commands on 32/3/10 (flatten), 32/3/11
+  (empty) and 32/3/12 (clean now).
 
   Objects are created automatically on first run.
 --]]
@@ -81,8 +82,8 @@ local OBJECTS = {
   { ga = GA.visits,   dt = 5,  name = 'Pawbby Visits Today' },
   { ga = GA.catkg,    dt = 9,  name = 'Pawbby Cat Weight',      units = 'g' },
   { ga = GA.litterlow, dt = 1,  name = 'Pawbby Litter Low' },
-  { ga = GA.catname,  dt = 16, name = 'Pawbby Cat Name' },
-  { ga = GA.fault,    dt = 16, name = 'Pawbby Fault' },
+  { ga = GA.catname,  dt = 16, name = 'Pawbby Cat Name',  init = 'Unknown' },
+  { ga = GA.fault,    dt = 16, name = 'Pawbby Fault',     init = 'None' },
   { ga = GA.cat1kg,   dt = 9,  name = 'Pawbby ' .. CAT_NAMES[1] .. ' Weight', units = 'g' },
   { ga = GA.cat2kg,   dt = 9,  name = 'Pawbby ' .. CAT_NAMES[2] .. ' Weight', units = 'g' },
   { ga = GA.cat1visits, dt = 5, name = 'Pawbby ' .. CAT_NAMES[1] .. ' Visits Today' },
@@ -94,8 +95,9 @@ local OBJECTS = {
 
 --[[ Create any object that does not exist yet; runs on script start. A new
      object has no value at all until something writes it (the object list
-     shows 0, but Mosaic will not offer it), so give it a neutral one. ]]
-local INITIAL = { [1] = false, [5] = 0, [9] = 0, [16] = '' }
+     shows 0, but Mosaic will not offer it), so give it a neutral one. Text
+     objects get visible text: Mosaic shows an empty string as no value. ]]
+local INITIAL = { [1] = false, [5] = 0, [9] = 0, [16] = '-' }
 
 local function ensureobjects()
   for _, o in ipairs(OBJECTS) do
@@ -103,7 +105,8 @@ local function ensureobjects()
       local okc, err = pcall(grp.create, {
         address = o.ga, name = o.name, datatype = o.dt, units = o.units,
       })
-      if okc and INITIAL[o.dt] ~= nil then grp.write(o.ga, INITIAL[o.dt]) end
+      local init = o.init or INITIAL[o.dt]
+      if okc and init ~= nil then grp.write(o.ga, init) end
       log('pawbby: create ' .. o.ga .. ' ' .. o.name .. ' -> ' .. tostring(okc and 'ok' or err))
     end
   end
@@ -336,9 +339,10 @@ if not pawbby then
   }
   -- earlier versions put the harmless DP 102 into the Fault object
   local f = grp.getvalue(GA.fault)
-  if type(f) == 'string' and f:find('^102:') then
-    grp.write(GA.fault, '')
-    log('pawbby: cleared stale fault ' .. f)
+  -- '' too: Mosaic shows an empty string as no value
+  if type(f) == 'string' and (f:find('^102:') or f == '') then
+    grp.write(GA.fault, 'None')
+    log('pawbby: cleared stale fault "' .. f .. '"')
   end
 end
 
@@ -356,7 +360,7 @@ local function resetcatobjects()
   local kg = grp.getvalue(GA.catkg)
   if type(kg) == 'number' and kg ~= 0 then
     grp.write(GA.catkg, 0)
-    grp.write(GA.catname, '')
+    grp.write(GA.catname, 'Unknown')
     log('pawbby: no visit samples, cleared leftover cat weight ' .. tostring(kg))
   end
 end

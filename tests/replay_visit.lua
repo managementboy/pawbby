@@ -147,7 +147,7 @@ run({
 dump('real visit')
 check(#writes == 0, 'no device writes without a command')
 check(#alerts == 0, 'DP 102 must not alert')
-check(objects['32/3/15'] == '', 'stale 102 fault cleared and not re-set')
+check(objects['32/3/15'] == 'None', 'stale 102 fault cleared and not re-set')
 check(logged('cleared leftover cat weight 2371.84'), 'leftover cat weight cleared')
 check(logged('cat back within 15 s, same visit'), 'split visit merged')
 check(logged('visit dp 113 = 4248'), 'DP 113 traced during a visit')
@@ -240,7 +240,8 @@ run({ idle })
 for _, ga in ipairs({ '32/3/1', '32/3/2', '32/3/7', '32/3/12', '32/3/16', '32/3/18' }) do
   check(objects[ga] ~= nil, ga .. ' has an initial value')
 end
-check(objects['32/3/16'] == 0 and objects['32/3/18'] == 0 and objects['32/3/2'] == '',
+check(objects['32/3/16'] == 0 and objects['32/3/18'] == 0 and objects['32/3/2'] == '-'
+  and objects['32/3/15'] == 'None' and objects['32/3/14'] == 'Unknown',
   'initial values match the datatype')
 
 print('ALL CHECKS PASSED')

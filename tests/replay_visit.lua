@@ -132,6 +132,7 @@ run({
   idle, idle, idle, idle,
   { { ['116'] = 'work_aclean' } },
   { { ['116'] = 'work_idle' }, { ['102'] = 'AQAACwAAAAAAAAAAAAAA' } },
+  { { ['108'] = 'AQAAEk1HUzEwNDA0MjUwNDE4MDA0NA==' } },   -- device info, not a fault
   idle,
   -- same payload again, more than 60 s later: a second visit
   { { ['116'] = 'cat_enter' } }, { { ['112'] = 6500 } },
@@ -146,8 +147,9 @@ run({
 })
 dump('real visit')
 check(#writes == 0, 'no device writes without a command')
-check(#alerts == 0, 'DP 102 must not alert')
-check(objects['32/3/15'] == 'None', 'stale 102 fault cleared and not re-set')
+check(#alerts == 0, 'trace DPs (102, 108) must not alert')
+check(objects['32/3/15'] == 'None', 'stale 102 fault cleared, 108 not parked as fault')
+check(logged('dp 108 = '), 'DP 108 logged as a trace DP')
 check(logged('cleared leftover cat weight 2371.84'), 'leftover cat weight cleared')
 check(logged('cat back within 15 s, same visit'), 'split visit merged')
 check(logged('visit dp 113 = 4248'), 'DP 113 traced during a visit')

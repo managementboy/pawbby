@@ -169,7 +169,7 @@ local KNOWN_DP = {
      Pawbby-Reborn saw it after manual cleans). Logged with their bytes so they can be decoded, but they must not
      raise an alert or land in the Fault object. ]]
 local TRACE_DP = {
-  ['102'] = true, ['109'] = true, ['110'] = true,
+  ['102'] = true, ['108'] = true, ['109'] = true, ['110'] = true,
 }
 
 -- base64 DP payload -> "01 00 00 05" for the log, raw value if not base64
@@ -337,10 +337,12 @@ if not pawbby then
     last = {},
     visits = (tonumber((storage.get('pawbby_visits'))) or 0),
   }
-  -- earlier versions put the harmless DP 102 into the Fault object
+  -- earlier versions parked harmless trace DPs (102, 108, ...) in the Fault
+  -- object. Clear any such leftover, and an empty string (Mosaic shows '' as
+  -- no value).
   local f = grp.getvalue(GA.fault)
-  -- '' too: Mosaic shows an empty string as no value
-  if type(f) == 'string' and (f:find('^102:') or f == '') then
+  local dp = type(f) == 'string' and f:match('^(%d+):') or nil
+  if f == '' or (dp and TRACE_DP[dp]) then
     grp.write(GA.fault, 'None')
     log('pawbby: cleared stale fault "' .. f .. '"')
   end

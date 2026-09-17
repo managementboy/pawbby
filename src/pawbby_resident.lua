@@ -33,6 +33,18 @@ local CFG = {
   -- id and key are filled in from .env by tools/deploy.sh; never commit them
 }
 
+-------------------------------------------------------------------- cats ----
+
+--[[ The two cats, heaviest first. Names are handed out by weight rank once
+     the DP 107 visit weights form two clusters (see learncats), so no gram
+     values are hard-coded. Isma is the larger male, Charlie the smaller
+     female. ]]
+local CAT_NAMES = { 'Isma', 'Charlie' }
+local LEARN_MIN    = 6     -- DP 107 samples needed before names are given
+local LEARN_WINDOW = 60    -- newest samples used, so the bands follow weight drift
+local LEARN_GAP    = 400   -- g; closer clusters cannot be told apart safely
+local MATCH_DEV    = 700   -- g; further than this from both cats -> Unknown
+
 ------------------------------------------------------------------ objects ---
 
 local GA = {
@@ -47,9 +59,17 @@ local GA = {
   litterlow = '32/3/13',  -- box reports litter running low      (1    bool)
   catname  = '32/3/14',   -- which cat the last visit matched    (16   string)
   fault    = '32/3/15',   -- last fault reported by the box      (16   string)
+  cat1kg   = '32/3/16',   -- CAT_NAMES[1] weight at their last visit (9.x)
+  cat2kg   = '32/3/17',   -- CAT_NAMES[2] weight at their last visit (9.x)
+  cat1visits = '32/3/18', -- CAT_NAMES[1] visits today           (5    uint8)
+  cat2visits = '32/3/19', -- CAT_NAMES[2] visits today           (5    uint8)
   flatten  = '32/3/10',   -- command: level the litter       (1    bool)
+  clean    = '32/3/12',   -- command: clean now              (1    bool)
   empty    = '32/3/11',   -- command: DUMP the tray          (1    bool)
 }
+
+local CAT_KG     = { GA.cat1kg, GA.cat2kg }
+local CAT_VISITS = { GA.cat1visits, GA.cat2visits }
 
 local OBJECTS = {
   { ga = GA.weight,   dt = 9,  name = 'Pawbby Weight',        units = 'g' },
@@ -63,7 +83,12 @@ local OBJECTS = {
   { ga = GA.litterlow, dt = 1,  name = 'Pawbby Litter Low' },
   { ga = GA.catname,  dt = 16, name = 'Pawbby Cat Name' },
   { ga = GA.fault,    dt = 16, name = 'Pawbby Fault' },
+  { ga = GA.cat1kg,   dt = 9,  name = 'Pawbby ' .. CAT_NAMES[1] .. ' Weight', units = 'g' },
+  { ga = GA.cat2kg,   dt = 9,  name = 'Pawbby ' .. CAT_NAMES[2] .. ' Weight', units = 'g' },
+  { ga = GA.cat1visits, dt = 5, name = 'Pawbby ' .. CAT_NAMES[1] .. ' Visits Today' },
+  { ga = GA.cat2visits, dt = 5, name = 'Pawbby ' .. CAT_NAMES[2] .. ' Visits Today' },
   { ga = GA.flatten,  dt = 1,  name = 'Pawbby Flatten' },
+  { ga = GA.clean,    dt = 1,  name = 'Pawbby Clean Now' },
   { ga = GA.empty,    dt = 1,  name = 'Pawbby Empty (DUMP)' },
 }
 
@@ -95,10 +120,23 @@ end
        113 int  resets on cat leave   114 enum motor status
        116 enum state machine         117 str  motor debug string          ]]
 
+--[[ DP 106 payloads. flatten and empty are confirmed on this box. clean is
+     the app's "clean now" (startClear) from the official app's device plugin,
+     as analysed by Pawbby-Reborn: createValue(ver 1, cmd 0, flag 0) = 01 00
+     00 00. The same encoding gives the tare payload confirmed here
+     (resetWeight, 01 01 00 00 on DP 109), and Reborn's DP 106 sweep never
+     tried command byte 00. CONFIRMED 2026-09-17 10:49: work_mclean within
+     the same second, idle again after 119 s, DP 102 result sent. The
+     reaction is still logged on every use (see CLEAN_WATCH). ]]
 local CMDS = {
   flatten = 'AQEAAQA=',   -- work_smooth
   empty   = 'AQIAAQA=',   -- work_empty, destructive
+  clean   = 'AQAAAA==',   -- startClear -> work_mclean
 }
+
+-- seconds to wait for the box to react to a clean command before logging
+-- that it did not
+local CLEAN_WATCH = 30
 
 --[[ Presence. cat_near_leave is deliberately NOT in here: it is the state the
      box reports once the cat has gone, so counting it as present would leave
@@ -106,16 +144,6 @@ local CMDS = {
      closing its measurement window. ]]
 local CAT_STATES = {
   cat_near = true, cat_enter = true, cat_leave = true,
-}
-
---[[ Cat identification by weight band. Empty on purpose: the bands are to be
-     derived from real samples rather than guessed. Fill in once the logged
-     visit weights cluster, e.g.
-       { name = 'Isma',    weight = 5200, tol = 500 },
-       { name = 'Charlie', weight = 3600, tol = 500 },
-     Two cats closer together than their tolerances cannot be told apart by
-     weight alone; keep tol below half the gap between them. ]]
-local CATS = {
 }
 
 --[[ Datapoints we have already identified. Anything outside this set is new
@@ -128,8 +156,9 @@ local KNOWN_DP = {
 }
 
 --[[ Seen but not decoded. They are normal traffic, not faults: 109/110 are
-     the tare echo and calibration result, 102 arrived after an ordinary auto
-     clean. Logged with their bytes so they can be decoded, but they must not
+     the tare echo and calibration result, 102 is the clean-cycle result the
+     box sends when a clean finishes (seen here after an auto clean,
+     Pawbby-Reborn saw it after manual cleans). Logged with their bytes so they can be decoded, but they must not
      raise an alert or land in the Fault object. ]]
 local TRACE_DP = {
   ['102'] = true, ['109'] = true, ['110'] = true,
@@ -142,13 +171,97 @@ local function hexdump(b64)
   return (raw:gsub('.', function(c) return string.format('%02x ', c:byte()) end)):sub(1, -2)
 end
 
-local function identify(w)
-  local best, bestdiff = nil, math.huge
-  for _, c in ipairs(CATS) do
-    local d = math.abs(w - c.weight)
-    if d <= (c.tol or 400) and d < bestdiff then best, bestdiff = c.name, d end
+--[[ DP 107 carries the box's own weighing of the cat. Layout
+       01 00 00 05 | WW WW | 00 | xx | 00      WW WW = grams, big endian
+     Evidence, not a spec: all three samples known (one here, two in the
+     Pawbby-Reborn notes) share that header and hold 4248, 4176 and 4049 g,
+     and 4049 is also the DP 111/113 reading in the Reborn status capture.
+     Byte 8 is unknown (11, 21, 34). Anything else returns nil, and every
+     visit logs this weight next to the scale peak so it keeps being checked. ]]
+local function weight107(b64)
+  local okd, raw = pcall(encdec.base64dec, b64)
+  if not okd or type(raw) ~= 'string' or #raw ~= 9 then return nil end
+  local b = { raw:byte(1, 9) }
+  if b[1] ~= 1 or b[2] ~= 0 or b[3] ~= 0 or b[4] ~= 5 then return nil end
+  local w = b[5] * 256 + b[6]
+  if w < 1000 or w > 12000 then return nil end
+  return w
+end
+
+--[[ Two-cluster split of the recent DP 107 weights. For sorted 1-D data the
+     best 2-means split is one of the n-1 cut points, so all are tried.
+     Returns { heavy mean, light mean }, or nil and the reason. One cat alone
+     splits into two halves less than two standard deviations apart, which
+     the gap test rejects. ]]
+local function learncats(samples)
+  local ws = {}
+  for i = #samples, 1, -1 do
+    if samples[i].src == '107' then ws[#ws + 1] = samples[i].w end
+    if #ws >= LEARN_WINDOW then break end
   end
-  return best or 'Unknown'
+  if #ws < LEARN_MIN then
+    return nil, 'learning ' .. #ws .. '/' .. LEARN_MIN
+  end
+  table.sort(ws)
+  local n, total, sq = #ws, 0, 0
+  for _, w in ipairs(ws) do total = total + w; sq = sq + w * w end
+  local best, cut, lsum, lsq = math.huge, nil, 0, 0
+  for i = 1, n - 1 do
+    lsum = lsum + ws[i]
+    lsq = lsq + ws[i] * ws[i]
+    local rn = n - i
+    local rsum, rsq = total - lsum, sq - lsq
+    local sse = (lsq - lsum * lsum / i) + (rsq - rsum * rsum / rn)
+    if i >= 2 and rn >= 2 and sse < best then best, cut = sse, i end
+  end
+  if not cut then return nil, 'need 2 samples per cat' end
+  local lo, hi = 0, 0
+  for i = 1, cut do lo = lo + ws[i] end
+  for i = cut + 1, n do hi = hi + ws[i] end
+  lo, hi = lo / cut, hi / (n - cut)
+  local sd = math.sqrt(math.max(best, 0) / n)
+  if hi - lo < math.max(LEARN_GAP, 4 * sd) then
+    return nil, 'one cluster (' .. math.floor(lo + 0.5) .. '/'
+        .. math.floor(hi + 0.5) .. ' g too close)'
+  end
+  return { hi, lo }
+end
+
+-- index into CAT_NAMES, or nil when the bands are unknown or nothing is close
+local function identify(w, bands)
+  if not bands then return nil end
+  local idx = math.abs(w - bands[1]) <= math.abs(w - bands[2]) and 1 or 2
+  if math.abs(w - bands[idx]) > MATCH_DEV then return nil end
+  return idx
+end
+
+-- a visit weighed by the box: store the sample, name the cat, publish
+local function recordcat(w, payload)
+  local samples = storage.get('pawbby_samples')
+  if type(samples) ~= 'table' then samples = {} end
+  samples[#samples + 1] = { t = os.time(), w = w, src = '107', p107 = payload }
+  -- keep storage bounded; learning only looks at the newest LEARN_WINDOW
+  while #samples > 300 do table.remove(samples, 1) end
+  local bands, why = learncats(samples)
+  local idx = identify(w, bands)
+  local who = idx and CAT_NAMES[idx] or 'Unknown'
+  samples[#samples].who = who
+  storage.set('pawbby_samples', samples)
+  put(GA.catkg, w)
+  put(GA.catname, who)
+  if idx then
+    -- grp.write, not put: the object timestamp should show this visit
+    grp.write(CAT_KG[idx], w)
+    local cv = storage.get('pawbby_catvisits')
+    if type(cv) ~= 'table' then cv = {} end
+    cv[who] = (cv[who] or 0) + 1
+    storage.set('pawbby_catvisits', cv)
+    put(CAT_VISITS[idx], cv[who])
+  end
+  log('pawbby: cat ' .. who .. ' ' .. w .. ' g ('
+      .. (bands and ('bands ' .. math.floor(bands[1] + 0.5) .. '/'
+                     .. math.floor(bands[2] + 0.5) .. ' g') or why)
+      .. ') sample #' .. #samples)
 end
 
 --[[ Lid states. Used to invalidate a weight measurement: with the lid open
@@ -171,34 +284,34 @@ local BUSY_STATES = {
      Well inside the ~70 s before the auto clean starts moving litter. ]]
 local VISIT_SETTLE = 15
 
--- evaluate a finished visit: peak weight minus the baseline before entry
+--[[ A visit window closed. With a DP 107 weight the box already weighed the
+     cat and recordcat has run; the scale peak is only logged next to it as a
+     cross-check. Without DP 107 the box did not count a visit (a peek), so
+     the peak is kept as a 'peak' sample for reference but names nothing. ]]
 local function finishvisit()
   local delta = (pawbby.wmax or 0) - (pawbby.wbase or 0)
   local d = math.floor(delta + 0.5)
   pawbby.settle = nil
-  if pawbby.lidseen then
+  if pawbby.visit107w then
+    log('pawbby: visit check: dp 107 ' .. pawbby.visit107w .. ' g, scale peak delta '
+        .. d .. ' g' .. (pawbby.lidseen and ' (lid was open)' or ''))
+  elseif pawbby.lidseen then
     log('pawbby: sample discarded, lid was open (delta ' .. d .. ' g)')
   -- ignore noise and litter shifting; a cat is at least 800 g
   elseif delta >= 800 then
-    local who = identify(delta)
-    put(GA.catkg, delta)
-    put(GA.catname, who)
-    local samples = storage.get('pawbby_samples') or {}
+    local samples = storage.get('pawbby_samples')
     if type(samples) ~= 'table' then samples = {} end
-    -- p107 kept alongside so the DP 107 payload can be checked against it
-    samples[#samples + 1] = {
-      t = os.time(), w = d, who = who, p107 = pawbby.visit107,
-    }
-    -- keep the log bounded; 300 visits is plenty for clustering
+    samples[#samples + 1] = { t = os.time(), w = d, src = 'peak', p107 = pawbby.visit107 }
     while #samples > 300 do table.remove(samples, 1) end
     storage.set('pawbby_samples', samples)
-    log('pawbby: cat weight ' .. d .. ' g (base '
+    log('pawbby: ' .. (pawbby.visit107 and 'dp 107 not decoded' or 'no dp 107')
+        .. ', scale delta ' .. d .. ' g (base '
         .. math.floor((pawbby.wbase or 0) + 0.5) .. ' peak '
-        .. math.floor((pawbby.wmax or 0) + 0.5) .. ') sample #' .. #samples)
+        .. math.floor((pawbby.wmax or 0) + 0.5) .. ') kept as peak sample #' .. #samples)
   else
     log('pawbby: visit ignored, delta ' .. d .. ' g')
   end
-  pawbby.visit107 = nil
+  pawbby.visit107, pawbby.visit107w = nil, nil
 end
 
 if not pawbby then
@@ -224,15 +337,19 @@ if not pawbby then
   end
 end
 
---[[ Cat Weight and Cat Name are only meaningful if they came from a stored
-     sample. With no samples (history was wiped when the lid guard arrived,
+--[[ Cat Weight and Cat Name are only meaningful if they came from a DP 107
+     sample. Without one (history was wiped when the lid guard arrived,
      because the 2371 g "cat" was the litter refill) whatever the objects hold
      is a leftover, so blank them rather than show a wrong weight. ]]
 local function resetcatobjects()
   local samples = storage.get('pawbby_samples')
-  if type(samples) == 'table' and #samples > 0 then return end
+  if type(samples) == 'table' then
+    for _, x in ipairs(samples) do
+      if x.src == '107' then return end
+    end
+  end
   local kg = grp.getvalue(GA.catkg)
-  if kg ~= nil and kg ~= 0 then
+  if type(kg) == 'number' and kg ~= 0 then
     grp.write(GA.catkg, 0)
     grp.write(GA.catname, '')
     log('pawbby: no visit samples, cleared leftover cat weight ' .. tostring(kg))
@@ -271,7 +388,9 @@ if (storage.get('pawbby_day')) ~= today then
   pawbby.visits = 0
   storage.set('pawbby_visits', 0)
   grp.write(GA.visits, 0)
-  log('pawbby: new day ' .. today .. ', visit counter reset')
+  storage.set('pawbby_catvisits', {})
+  for _, ga in ipairs(CAT_VISITS) do grp.write(ga, 0) end
+  log('pawbby: new day ' .. today .. ', visit counters reset')
 end
 local dev = pawbby.dev
 
@@ -334,6 +453,36 @@ if takecmd(GA.flatten) then
   log('pawbby: flatten requested via ' .. GA.flatten)
 end
 
+--[[ A clean turns the drum, so it is only sent when the box is known to be
+     idle: state reported and not a cat, busy or lid state, and no visit
+     window open (a cat that just left may be back within VISIT_SETTLE). The
+     box has its own cat sensor, but this does not rely on it. ]]
+local function cleanblocked()
+  local st = pawbby.last['116']
+  if not st then return 'state not known yet' end
+  if CAT_STATES[st] or BUSY_STATES[st] or LID_STATES[st] then return 'state ' .. st end
+  if pawbby.inbox or pawbby.settle then return 'visit in progress' end
+  return nil
+end
+
+local function sendclean(via)
+  local why = cleanblocked()
+  if why then
+    log('pawbby: clean REFUSED (' .. why .. ') via ' .. via)
+    return
+  end
+  dev:set({ ['106'] = CMDS.clean })
+  pawbby.cleansent = now
+  log('pawbby: clean requested via ' .. via)
+end
+
+if takecmd(GA.clean) then sendclean(GA.clean) end
+
+if pawbby.cleansent and now >= pawbby.cleansent + CLEAN_WATCH then
+  pawbby.cleansent = nil
+  log('pawbby: clean command: no clean state within ' .. CLEAN_WATCH .. ' s')
+end
+
 if takecmd(GA.empty) then
   dev:set({ ['106'] = CMDS.empty })
   log('pawbby: EMPTY (dump) requested via ' .. GA.empty)
@@ -343,7 +492,9 @@ end
 local cmd = (storage.get('pawbby_cmd'))
 if cmd then
   storage.set('pawbby_cmd', nil)
-  if CMDS[cmd] then
+  if cmd == 'clean' then
+    sendclean('storage')
+  elseif CMDS[cmd] then
     dev:set({ ['106'] = CMDS[cmd] })
     log('pawbby: sent ' .. cmd)
   else
@@ -405,6 +556,13 @@ while socket.gettime() < deadline do
           pawbby.visitclear = now + 2
           log('pawbby: CAT VISIT (dp 107 = ' .. s .. ' [' .. hexdump(s)
               .. ']) count ' .. pawbby.visits)
+          local w = weight107(s)
+          if w then
+            pawbby.visit107w = w
+            recordcat(w, s)
+          else
+            log('pawbby: dp 107 layout not recognised, no cat weight')
+          end
         end
 
       elseif pawbby.last[key] ~= s then
@@ -425,6 +583,11 @@ while socket.gettime() < deadline do
           put(GA.cat, CAT_STATES[s] or false)
           put(GA.cleaning, BUSY_STATES[s] or false)
           log('pawbby: state ' .. s)
+          if pawbby.cleansent then
+            log('pawbby: clean command -> ' .. s .. ' after '
+                .. (now - pawbby.cleansent) .. ' s')
+            if BUSY_STATES[s] then pawbby.cleansent = nil end
+          end
 
           -- litter level, reported as a state pair
           if s == 'cat_litter_little' then put(GA.litterlow, true) end
@@ -445,13 +608,19 @@ while socket.gettime() < deadline do
               log('pawbby: cat back within ' .. VISIT_SETTLE .. ' s, same visit')
             else
               pawbby.lidseen = false
-              pawbby.visit107 = nil
+              pawbby.visit107, pawbby.visit107w = nil, nil
               pawbby.wbase = pawbby.w or 0
               pawbby.wmax  = pawbby.w or 0
             end
           elseif not present and pawbby.inbox then
             pawbby.inbox = false
             pawbby.settle = now + VISIT_SETTLE
+          end
+
+        elseif key == '113' then
+          -- possibly the box's own cat weight (see weight107); trace in visits
+          if pawbby.inbox or pawbby.settle then
+            log('pawbby: visit dp 113 = ' .. s)
           end
 
         elseif TRACE_DP[key] then

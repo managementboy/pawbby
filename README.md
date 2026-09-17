@@ -10,10 +10,14 @@ and this does not depend on it.
 ## Status
 
 Working: local connection, full state read, weight, visit counting, litter
-level, flatten and tare commands, Mosaic tiles in the entrance room.
+level, flatten, **clean now** and tare commands, Mosaic tiles in the entrance
+room.
 
-Open: DP 107 visit payload undecoded, fault-code DP unidentified, per-cat
-weight bands not yet populated. See `docs/FINDINGS.md`.
+Built, waiting for real visits: per-cat weight and visits (Isma, Charlie),
+learned automatically from the box's own visit weighing (DP 107). Names
+appear after 6 weighed visits and only once the weights form two clusters.
+
+Open: fault-code DP unidentified. See `docs/FINDINGS.md`.
 
 ## Layout
 
@@ -36,9 +40,19 @@ weight bands not yet populated. See `docs/FINDINGS.md`.
 | 32/3/9 | Cat weight (g) |
 | 32/3/10 | Command: flatten |
 | 32/3/11 | Command: empty (DUMP) |
+| 32/3/12 | Command: clean now |
 | 32/3/13 | Litter low |
-| 32/3/14 | Cat name |
+| 32/3/14 | Cat name (last visit) |
 | 32/3/15 | Fault |
+| 32/3/16 | Isma weight (g, last visit) |
+| 32/3/17 | Charlie weight (g, last visit) |
+| 32/3/18 | Isma visits today |
+| 32/3/19 | Charlie visits today |
+
+Command objects are momentary: write true, the script sends the command and
+resets the object. Clean now is refused (and logged) unless the box is idle
+with no cat, visit or lid activity. Per-cat objects stay at 0 until the cats
+can be told apart.
 
 All are **virtual** objects — 32/x is outside the KNX standard range.
 

@@ -5,6 +5,7 @@ usage: lm.py pull <id> <file>          fetch a script's source
        lm.py logs [N] [filter] [--follow]    newest N log lines, oldest first
        lm.py errors [N] [filter] [--follow]  newest N error-log entries
          (env LM_SINCE=<unix time> drops older entries)
+       lm.py press <ga>                 set a bool command object true (not 32/3/11)
        lm.py toggle <id>                flip a script's enabled flag
        lm.py get <path>                 raw authenticated GET (debugging)
 
@@ -198,6 +199,16 @@ def main():
         if lm.editor_state(sid)["script"] != src:
             sys.exit(f"{sid}: saved but read-back differs from {path}")
         print(f"{sid}: saved {path} ({len(src)} chars), read-back verified")
+
+    elif cmd == "press" and len(args) == 1:
+        # Momentary command object: write true, the resident script acts and
+        # clears it. Same call as the object list's set-value dialog.
+        ga = args[0]
+        if ga == "32/3/11":
+            sys.exit("32/3/11 empties the tray; not pressable from tooling")
+        res = lm.ajax("objects", "setvalue", {"data": json.dumps(
+            {"value": "true", "type": "bool", "datatype": 1, "address": ga})})
+        print(f"{ga}: pressed {res}")
 
     elif cmd == "toggle" and len(args) == 1:
         # Same as the editor's enable/disable button; it flips, so report.

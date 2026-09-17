@@ -18,7 +18,7 @@ contains any secret value from `.env`; install it in every clone with
 | `deploy.sh --dry-run` | Diff local `src/` against what is on the LM. No writes. |
 | `logs.sh [N] [filter]` | Last N lines of the LM script log matching `filter` (default `pawbby`). `-f` follows, `-e` reads the error log. |
 | `../tests/run.sh` | Offline: LuaJIT syntax check of `src/*.lua` and a replay of real visit sequences through the resident script. Run before every deploy. |
-| `lm.py` | The client both wrap. `pull <id> <file>` fetches any script; `get <path>` is a raw authenticated GET for poking at the admin UI. |
+| `lm.py` | The client both wrap. `pull <id> <file>` fetches any script; `press <ga>` sets a command object true like the object list does (refuses 32/3/11, the dump); `get <path>` is a raw authenticated GET for poking at the admin UI. |
 
 Pull the LM's current copy back into the repo (e.g. after someone edited in
 the browser):
@@ -50,6 +50,9 @@ Established against firmware 20251204. See `docs/FINDINGS.md` for the gotchas.
   came back, read-back showed the original. `lm.py push` exits non-zero on it.
 - Logs: `POST /scada-main/logs/main` and `/scada-main/errorlog/main` with
   `limit`, `start`.
+- Set an object: `POST /scada-main/objects/setvalue`,
+  `data={"value":"true","type":"bool","datatype":1,"address":"32/3/12"}`
+  (value JSON-encoded as a string).
 
 ## Still to write
 

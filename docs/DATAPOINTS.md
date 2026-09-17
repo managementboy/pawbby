@@ -12,10 +12,10 @@ gwId/devId envelope. `DP_QUERY_NEW` (0x10) is ignored by this firmware.
 | DP | Type | Meaning |
 |----|------|---------|
 | 101 | raw | work state echo |
-| 102 | raw | unmapped. Seen after an auto clean finished: `01 00 00 0b` + 11 zero bytes. Logged, not alerted |
+| 102 | raw | clean result, sent when a clean ends (auto and manual seen): `01 00 00 0b` + 11 zero bytes both times, so byte 3 is **not** a cycle counter. Logged, not alerted |
 | 103 | raw | composite status blob |
 | 106 | raw | command in |
-| 107 | raw | cat visit summary; fires only on a real visit, ~70 s before auto-clean; not part of query replies. **Payload not yet decoded**, one sample `01 00 00 05 10 98 00 0b 00` |
+| 107 | raw | cat visit summary; fires only on a real visit, ~70 s before auto-clean; not part of query replies. Layout `01 00 00 05 WW WW 00 xx 00`, **WW WW = cat weight in grams** (working hypothesis, see below) |
 | 109 | raw | weight calibration / tare. **Write confirmed**, see below |
 | 110 | raw | calibration result |
 | 111 | int | raw weight ADC |
@@ -33,6 +33,29 @@ gwId/devId envelope. `DP_QUERY_NEW` (0x10) is ignored by this firmware.
 | Flatten / level litter | 106 | `AQEAAQA=` | safe, use this for testing |
 | Empty / dump tray | 106 | `AQIAAQA=` | destructive |
 | Tare (zero the scale) | 109 | `AQEAAA==` | 4-byte `01 01 00 00`; device replies with an empty ack on cmd 0x0d |
+| Clean now (manual clean) | 106 | `AQAAAA==` | 4-byte `01 00 00 00`, the app's `startClear`. Confirmed 2026-09-17: `work_mclean` at once, idle after 119 s, DP 102 sent |
+
+The app's device plugin builds these as `createValue(ver, cmd, flag, data)`
+= ver (1 byte), cmd (1 byte), flag (2 bytes), data. Tare is
+`resetWeight` = (1, 1, 0) and clean now is `startClear` = (1, 0, 0), which
+is why the clean payload was trusted enough to test. Also in the plugin,
+**not tested here**: `startFP` fixed-point clean `01 01 00 00` and
+`cancelClear` `01 03 00 00` on DP 106, `takeOutLitterBox` `01 00 00 00` on
+DP 109 (source: Pawbby-Reborn VALUES.md, APK analysis).
+
+## DP 107 cat weight
+
+| Source | Payload | Bytes 4-5 | Byte 7 |
+|--------|---------|-----------|--------|
+| this box, 2026-09-17 09:27 | `AQAABRCYAAsA` | 4248 g | 11 |
+| Pawbby-Reborn | `AQAABRBQABUA` | 4176 g | 21 |
+| Pawbby-Reborn | `AQAABQ/RACIA` | 4049 g | 34 |
+
+4049 is also the DP 111/113 value in Reborn's status capture. The script
+uses bytes 4-5 as the cat weight and logs it next to the scale peak delta
+on every visit (`visit check: dp 107 N g, scale peak delta M g`) so the
+hypothesis keeps being tested. At 09:27 the two were 4248 vs 4258 g.
+Byte 7 is unknown.
 
 Writes require the 15-byte version header (`"3.4"` plus 12 zero bytes)
 before the JSON, and must **not** include `cid` — that field is for gateway

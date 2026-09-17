@@ -63,11 +63,11 @@ Written so the same ground is not covered twice.
 
 ## Open
 
-- DP 107 visit payload is undecoded. One real sample is now in the log
-  (2026-09-17 09:27:38): `AQAABRCYAAsA` = `01 00 00 05 10 98 00 0b 00`.
-  Unverified guess: `0x1098` = 4248 g cat weight. Needs more samples.
-- DP 102 is unmapped. Seen once, right after an auto clean finished
-  (2026-09-17 09:30:39): `AQAACwAAAAAAAAAAAAAA`. It had been raising an
+- DP 107 bytes 4-5 are read as the cat weight (see DATAPOINTS.md). Three
+  samples fit and one matches a DP 113 reading; each visit logs it against
+  the scale peak. If the two disagree over several visits, revisit this.
+- DP 102 is the clean result: sent at the end of the 09:30 auto clean and
+  the 10:51 manual clean, identical both times. It had been raising an
   alert and overwriting the Fault object (`102:AQAACwAAAA`); it is now logged
   with its bytes only, and the stale Fault value is cleared on start.
 - The same visit logged `visit ignored, delta 0 g` twice. Two causes are
@@ -97,13 +97,30 @@ Written so the same ground is not covered twice.
 - Mosaic does not offer newly created objects in its widget pickers. Reload,
   "Save project", localStorage clear and seeding a value all failed to
   refresh it. Cache location unknown.
-- Per-cat weight bands are empty pending real samples (two cats: Isma, the
-  larger male; Charlie, the smaller female).
+- Per-cat bands are learned, not configured: once 6 DP 107 weights exist,
+  a two-cluster split of the newest 60 names the heavier cluster Isma and the
+  lighter Charlie, if the clusters are at least 400 g and 4 standard
+  deviations apart. Until then, or if the cats weigh too alike, the name is
+  `Unknown` and the log says why. Unconfirmed until real visits accumulate.
+
+## Clean now
+
+- Pawbby-Reborn concluded the manual clean could not be triggered remotely:
+  every DP 106 command byte 01-30, DPs 1-66, 101, 105, 107-150 and the Tuya
+  cloud were tried. Byte 00 was never tried. Their own APK analysis of the
+  app plugin lists `startClear` = `01000000` on topic 106, and the app did
+  have "clean now".
+- Sent as DP 106 `AQAAAA==` on 2026-09-17 10:49:32 with the box idle:
+  `work_mclean` in the same second, `work_idle` + DP 102 at 10:51:31.
+- The script refuses it unless DP 116 is known and not a cat, busy or lid
+  state and no visit window is open. The box has its own cat detection;
+  the interlock does not rely on it.
 
 ## Credit
 
 The DP map, the state machine and the `106` payloads come from the
 Pawbby-Reborn project (github.com/larsjarred9/Pawbby-Reborn), AGPL-3.0.
-The tare payload, the `lid_*` and `cat_litter_*` states and the
+The tare payload, the working clean-now payload (`AQAAAA==`, from their
+own APK notes), the DP 107 weight layout, the `lid_*` and `cat_litter_*` states and the
 `deodorant_days` identification were established here and should be sent
 back to them.

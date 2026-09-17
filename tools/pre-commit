@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Installed copy lives in .git/hooks/pre-commit; see tools/check-secrets.sh.
+exec tools/check-secrets.sh

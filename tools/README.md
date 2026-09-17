@@ -9,8 +9,8 @@ Secrets are not in `src/`: the resident script contains `${TUYA_KEY}`, which
 placeholder. The LM itself holds the real values.
 
 The GitHub repo is **public**. `tools/check-secrets.sh` refuses a commit that
-contains any secret value from `.env`; install it as the pre-commit hook in
-every clone (command at the top of the script). `--all` scans the working tree.
+contains any secret value from `.env`; install it in every clone with
+`cp tools/pre-commit .git/hooks/pre-commit`. `--all` scans the working tree.
 
 | Script | What it does |
 |--------|--------------|

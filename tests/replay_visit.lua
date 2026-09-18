@@ -97,6 +97,22 @@ local function visit(w, base)
   })
 end
 
+-- a visit followed by an auto-clean that drops the tray by `used` grams.
+-- The tray is settled to `pre` before entry so wbase (captured at cat_enter)
+-- is known, and the post-clean reading is pre-used.
+local function visitclean(w, used, pre)
+  pre = pre or 2342
+  run({
+    { { ['112'] = pre } },
+    { { ['116'] = 'cat_enter' } }, { { ['112'] = pre + w } },
+    { { ['107'] = p107(w) } }, { { ['112'] = pre } },
+    { { ['116'] = 'cat_near_leave' } }, { { ['116'] = 'work_idle' } },
+    { { ['116'] = 'work_aclean' } },
+    { { ['112'] = pre - used }, { ['116'] = 'work_idle' } },
+    idle,
+  })
+end
+
 local function check(c, m) if not c then error('FAIL: ' .. m, 0) end end
 local function logged(text)
   return table.concat(logs, '\n'):find(text, 1, true) ~= nil
@@ -245,5 +261,56 @@ end
 check(objects['32/3/16'] == 0 and objects['32/3/18'] == 0 and objects['32/3/2'] == '-'
   and objects['32/3/15'] == 'None' and objects['32/3/14'] == 'Unknown',
   'initial values match the datatype')
+
+-------------------------------------------- 6. litter: pee vs stool -----
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+-- seed enough named samples so visits identify as Isma
+store.pawbby_samples = {}
+for _, w in ipairs({ 5300, 5280, 5320 }) do
+  store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0, w = w, src = '107', who = 'Isma' }
+end
+for _, w in ipairs({ 4100, 4120, 4090 }) do
+  store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0, w = w, src = '107', who = 'Charlie' }
+end
+-- weights vary slightly so each DP 107 payload differs (identical payloads
+-- within 60 s are dropped as retransmits, exactly as on the real box)
+visitclean(5290, 20)                            -- 20 g litter -> stool
+for i = 1, 5 do visitclean(5300 + i * 4, 80) end -- 80 g litter -> urine, x5
+dump('litter / acute')
+check(logged('Isma stool, litter used 20'), 'small litter delta -> stool')
+check(logged('Isma urine, litter used 80'), 'large litter delta -> urine')
+local el = store.pawbby_elim or {}
+check(el.Isma and el.Isma.pee == 5 and el.Isma.stool == 1,
+  'pee/stool tallied (' .. tostring(el.Isma and el.Isma.pee) .. '/'
+  .. tostring(el.Isma and el.Isma.stool) .. ')')
+check(objects['32/3/20'] == true, 'acute urination raises health alert')
+check(objects['32/3/21'] == 'Isma pees 5', 'acute alert note set on the KNX object')
+check(table.concat(alerts, ' '):find('urinated 5x today', 1, true) ~= nil,
+  'acute urination raises an LM alert')
+
+-------------------------------------- 7. trend: weight loss + no visit --
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+store.pawbby_daily = {}
+for d = 1, 6 do
+  store.pawbby_daily[d] = {
+    d = 'day' .. d,
+    Isma    = { v = 2, pee = 1, stool = 1, w = 5300 },
+    Charlie = { v = 2, pee = 1, stool = 1, w = 4100 },
+  }
+end
+-- yesterday: Isma weight dropped to 4900 g (-8%), Charlie did not visit
+objects['32/3/16'] = 4900
+objects['32/3/17'] = 4100
+store.pawbby_catvisits = { Isma = 2 }
+store.pawbby_elim = { Isma = { pee = 1, stool = 1 } }
+clock = clock + 86400
+run({ idle })
+dump('trend')
+check(objects['32/3/20'] == true, 'trend change raises health alert')
+check(logged('HEALTH'), 'health summary logged')
+check(logged('Isma wt -'), 'Isma weight loss flagged')
+check(logged('Charlie no visit'), 'Charlie zero-visit flagged')
 
 print('ALL CHECKS PASSED')

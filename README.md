@@ -48,6 +48,8 @@ Open: fault-code DP unidentified. See `docs/FINDINGS.md`.
 | 32/3/17 | Charlie weight (g, last visit) |
 | 32/3/18 | Isma visits today |
 | 32/3/19 | Charlie visits today |
+| 32/3/20 | Health alert (bool) |
+| 32/3/21 | Health note (short text) |
 
 Command objects are momentary: write true, the script sends the command and
 resets the object. Clean now is refused (and logged) unless the box is idle
@@ -55,6 +57,29 @@ with no cat, visit or lid activity. Per-cat objects stay at 0 until the cats
 can be told apart.
 
 All are **virtual** objects — 32/x is outside the KNX standard range.
+
+## Health monitoring
+
+The box weighs each cat and cleans after each visit, which is enough to watch
+for changes in toilet habits -- an early warning to see a vet, **not** a
+diagnosis. It is biased to alert: a false alarm beats a missed problem.
+
+- **Urine vs stool** is told apart by litter used per visit (tray-weight drop
+  across the following clean): a pee clumps a lot of litter, a stool little.
+  The gram threshold (`URINE_LITTER_MIN`) is provisional; raw grams are logged
+  so it can be calibrated from real visits.
+- **Acute** (same day, no baseline): one cat urinating unusually often raises
+  an alert immediately -- the urinary-blockage catch, which for a male cat
+  (Isma) is an emergency.
+- **Trend** (daily): each cat's visits, urinations and weight are compared to
+  its own rolling baseline; a weight drop, a day with no visit, or a urination
+  spike raises an alert.
+- Surfaced on `32/3/20` (Health alert, bool) and `32/3/21` (Health note, short
+  text), plus the LM log and an LM alert. History accrues in LM storage
+  (`pawbby_daily`).
+
+Not a substitute for a vet; thresholds are in the config block of the resident
+script and will want tuning against real data.
 
 ## Configuration
 

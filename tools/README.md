@@ -56,5 +56,13 @@ Established against firmware 20251204. See `docs/FINDINGS.md` for the gotchas.
 
 ## Still to write
 
-- `cluster.py` — read the visit-weight samples out of LM storage and cluster
-  them into per-cat bands.
+Per-cat clustering is no longer a separate tool: it runs live inside
+`src/pawbby_resident.lua` (`learncats`), which splits the recent DP 107 weights
+into two bands and names the cats. Confirmed on real visits 2026-09-18
+(Isma ~4.73 kg, Charlie ~4.11 kg).
+
+Optional, not yet written:
+
+- `samples.py` — export the `pawbby_samples` history out of LM storage to CSV
+  for offline analysis (the resident script already keeps up to 300, each with
+  timestamp, weight, cat and raw DP 107 payload).

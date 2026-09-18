@@ -81,6 +81,23 @@ diagnosis. It is biased to alert: a false alarm beats a missed problem.
 Not a substitute for a vet; thresholds are in the config block of the resident
 script and will want tuning against real data.
 
+### Email alerts (Gmail)
+
+A health alert also emails, if enabled. Sending uses the LM's built-in `mail()`
+and happens outside the poll loop (rate-limited), so a slow SMTP call cannot
+overrun the resident. Setup:
+
+1. In Gmail, create an **App Password** (Google account -> Security -> 2-Step
+   Verification -> App passwords). The normal password will not work.
+2. In the LM's mailer/SMTP settings, configure Gmail:
+   `smtp.gmail.com`, port `465`, SSL on, username = your Gmail address,
+   password = the App Password, from = your Gmail address.
+3. Put the recipient in `.env` as `ALERT_EMAIL=you@example.com`, then
+   `tools/deploy.sh`. Leave it blank to keep email off.
+
+The Gmail App Password lives only in the LM mailer config; the repo only ever
+holds the `${ALERT_EMAIL}` placeholder (recipient is filled from `.env`).
+
 ## Configuration
 
 Copy `.env.example` to `.env` (git-ignored) and fill in the LM login and the

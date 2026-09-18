@@ -2,7 +2,7 @@
      device. Frames are fed per 5 s script cycle. Run: tests/run.sh ]]
 local SRC = ...
 local T0 = 1789630000   -- 2026-09-17, morning
-local clock, logs, objects, store, alerts, queries, inbox, writes
+local clock, logs, objects, store, alerts, queries, inbox, writes, mails
 
 local B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
@@ -56,6 +56,7 @@ local realdate = os.date
 os.date = function(f, t) return realdate(f, t or clock) end
 function log(s) logs[#logs + 1] = string.format('%6d %s', clock - T0, s) end
 function alert(s) alerts[#alerts + 1] = s end
+function mail(to, subj, body) mails[#mails + 1] = { to = to, s = subj, b = body } end
 grp = {
   find = function(ga) return objects[ga] ~= nil and { value = objects[ga] } or nil end,
   getvalue = function(ga) return objects[ga] end,
@@ -74,7 +75,7 @@ local chunk = assert(loadstring(SRC, '=pawbby_resident'))
 
 local function world()
   pawbby = nil
-  clock, logs, objects, store, alerts, queries, inbox, writes = T0, {}, {}, {}, {}, 0, {}, {}
+  clock, logs, objects, store, alerts, queries, inbox, writes, mails = T0, {}, {}, {}, {}, 0, {}, {}, {}
 end
 
 -- one entry per 5 s cycle: list of dps tables arriving in that cycle
@@ -288,6 +289,9 @@ check(objects['32/3/20'] == true, 'acute urination raises health alert')
 check(objects['32/3/21'] == 'Isma pees 5', 'acute alert note set on the KNX object')
 check(table.concat(alerts, ' '):find('urinated 5x today', 1, true) ~= nil,
   'acute urination raises an LM alert')
+local emailed = false
+for _, m in ipairs(mails) do if m.b:find('urinated', 1, true) then emailed = true end end
+check(emailed, 'acute urination sends an email')
 
 -------------------------------------- 7. trend: weight loss + no visit --
 world()

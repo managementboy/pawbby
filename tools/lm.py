@@ -142,14 +142,16 @@ class LM:
 
 # Secrets stay out of src/: the repo holds ${NAME} placeholders, the LM holds
 # the real values. push fills them in from .env, pull turns them back.
-SECRETS = ("TUYA_KEY", "TUYA_ID")
+SECRETS = ("TUYA_KEY", "TUYA_ID", "ALERT_EMAIL")
 
 
 def render(src):
     for name in SECRETS:
         token = "${" + name + "}"
         if token in src:
-            if not os.environ.get(name):
+            # None = the .env line is missing (a real mistake); an empty value
+            # is allowed and substitutes "" (used for optional placeholders).
+            if os.environ.get(name) is None:
                 sys.exit(f"{token} used in source but {name} not set in .env")
             src = src.replace(token, os.environ[name])
     return src

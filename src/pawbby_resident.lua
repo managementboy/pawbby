@@ -59,6 +59,8 @@ local HEALTH_WEIGHT_DROP = 0.05  -- >= 5 % weight loss vs baseline alerts
 local HEALTH_SPIKE       = 2.0   -- a daily count >= 2x its baseline alerts
 local URINE_LITTER_MIN   = 60    -- g of litter used at/above which a visit is a pee (provisional)
 local URINE_ACUTE_DAY    = 5     -- urinations in one day (one cat) -> same-day alert
+local ALERT_EMAIL     = '${ALERT_EMAIL}'  -- filled from .env at deploy; '' = email off
+local ALERT_EMAIL_MIN = 300               -- min seconds between emails (anti-storm)
 
 ------------------------------------------------------------------ objects ---
 
@@ -302,6 +304,13 @@ local function median(t)
   return (x[n / 2] + x[n / 2 + 1]) / 2
 end
 
+-- queue a health email; the main loop sends it (mail() can block, so it is
+-- never called from the poll loop). Empty recipient disables it.
+local function queue_email(subject, body)
+  if ALERT_EMAIL == '' then return end
+  storage.set('pawbby_email', { s = subject, b = body })
+end
+
 --[[ Count a finished elimination as pee or stool by litter used, and raise a
      same-day alert if one cat urinates suspiciously often. This needs no
      baseline -- it is the acute urinary / blockage catch (a blocked male cat
@@ -321,6 +330,11 @@ local function tally_elim(who, used)
     put(GA.healthmsg, (who .. ' pees ' .. c.pee):sub(1, 14))
     alert('PAWBBY health: ' .. who .. ' urinated ' .. c.pee
           .. 'x today, possible urinary problem -- check with a vet')
+    queue_email('PAWBBY: ' .. who .. ' urinating a lot',
+      who .. ' urinated ' .. c.pee .. ' times today. Frequent urination can mean a'
+      .. ' urinary problem' .. (who == CAT_NAMES[1]
+         and ', and in a male cat a blockage is an emergency' or '')
+      .. '. Please check ' .. who .. ' and consider a vet.')
   end
 end
 
@@ -369,6 +383,10 @@ local function healthcheck(daily)
     put(GA.healthmsg, full:sub(1, 14))
     log('pawbby: HEALTH ' .. full)
     alert('PAWBBY health: ' .. full .. ' -- check the cat(s) with a vet')
+    queue_email('PAWBBY health alert',
+      'The litter box flagged a change: ' .. full .. '.\n\nThis is an early '
+      .. 'warning from the box, not a diagnosis. Please check the cat(s) and '
+      .. 'consider a vet.')
   else
     put(GA.healthbad, false)
     put(GA.healthmsg, 'OK')
@@ -536,6 +554,22 @@ if prevday ~= today then
   for _, ga in ipairs(CAT_VISITS) do grp.write(ga, 0) end
   log('pawbby: new day ' .. today .. ', visit counters reset')
 end
+
+--[[ Send a queued health email. mail() can take a couple of seconds, so it is
+     done here -- once per cycle, rate-limited -- and never inside the poll
+     loop. It runs before the connect/return below so mail still goes out when
+     the box is offline. ]]
+if ALERT_EMAIL ~= '' and type(mail) == 'function' then
+  local q = storage.get('pawbby_email')
+  if type(q) == 'table' and now >= (pawbby.nextemail or 0) then
+    pawbby.nextemail = now + ALERT_EMAIL_MIN
+    storage.set('pawbby_email', nil)
+    local oke, err = pcall(mail, ALERT_EMAIL, q.s, q.b)
+    log('pawbby: email ' .. (oke and ('sent to ' .. ALERT_EMAIL)
+                             or ('FAILED: ' .. tostring(err))))
+  end
+end
+
 local dev = pawbby.dev
 
 ----------------------------------------------------------------- connect ----

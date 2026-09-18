@@ -83,20 +83,25 @@ script and will want tuning against real data.
 
 ### Email alerts (Gmail)
 
-A health alert also emails, if enabled. Sending uses the LM's built-in `mail()`
-and happens outside the poll loop (rate-limited), so a slow SMTP call cannot
-overrun the resident. Setup:
+A health alert also emails, if enabled. This LM firmware has **no mailer UI**,
+so the script sends directly to Gmail's SMTP over SSL (port 465) using a Google
+**App Password**. Sending happens outside the poll loop and is rate-limited, so
+a slow SMTP call cannot overrun the resident. Setup is entirely in `.env`:
 
-1. In Gmail, create an **App Password** (Google account -> Security -> 2-Step
-   Verification -> App passwords). The normal password will not work.
-2. In the LM's mailer/SMTP settings, configure Gmail:
-   `smtp.gmail.com`, port `465`, SSL on, username = your Gmail address,
-   password = the App Password, from = your Gmail address.
-3. Put the recipient in `.env` as `ALERT_EMAIL=you@example.com`, then
-   `tools/deploy.sh`. Leave it blank to keep email off.
+1. In Gmail, turn on 2-Step Verification, then create an **App Password**
+   (Google account -> Security -> App passwords). Your normal password will not
+   work for SMTP.
+2. In `.env` set:
+   ```
+   ALERT_EMAIL=you@example.com          # where alerts go
+   GMAIL_USER=youraccount@gmail.com     # the sending Gmail account
+   GMAIL_APP_PASSWORD=the16charapppass  # the App Password, no spaces
+   ```
+3. `tools/deploy.sh`. Leave any of the three blank to keep email off.
 
-The Gmail App Password lives only in the LM mailer config; the repo only ever
-holds the `${ALERT_EMAIL}` placeholder (recipient is filled from `.env`).
+The App Password never enters the repo: `src/` holds only `${GMAIL_APP_PASSWORD}`
+and friends; the real values live in `.env` (git-ignored) and are filled in at
+deploy. `tools/check-secrets.sh` refuses a commit that contains them.
 
 ## Configuration
 

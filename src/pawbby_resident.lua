@@ -59,8 +59,10 @@ local HEALTH_WEIGHT_DROP = 0.05  -- >= 5 % weight loss vs baseline alerts
 local HEALTH_SPIKE       = 2.0   -- a daily count >= 2x its baseline alerts
 local URINE_LITTER_MIN   = 60    -- g of litter used at/above which a visit is a pee (provisional)
 local URINE_ACUTE_DAY    = 5     -- urinations in one day (one cat) -> same-day alert
-local ALERT_EMAIL     = '${ALERT_EMAIL}'  -- filled from .env at deploy; '' = email off
-local ALERT_EMAIL_MIN = 300               -- min seconds between emails (anti-storm)
+local ALERT_EMAIL     = '${ALERT_EMAIL}'          -- recipient; '' = email off
+local GMAIL_USER      = '${GMAIL_USER}'           -- gmail address (SMTP login + From)
+local GMAIL_APP_PASS  = '${GMAIL_APP_PASSWORD}'   -- a Google App Password (from .env)
+local ALERT_EMAIL_MIN = 300                       -- min seconds between emails (anti-storm)
 
 ------------------------------------------------------------------ objects ---
 
@@ -307,8 +309,44 @@ end
 -- queue a health email; the main loop sends it (mail() can block, so it is
 -- never called from the poll loop). Empty recipient disables it.
 local function queue_email(subject, body)
-  if ALERT_EMAIL == '' then return end
+  if ALERT_EMAIL == '' or GMAIL_USER == '' or GMAIL_APP_PASS == '' then return end
   storage.set('pawbby_email', { s = subject, b = body })
+end
+
+--[[ Send one email straight to Gmail's SMTP over implicit SSL (port 465) with
+     an App Password. This firmware has no mailer UI, so mail() has nothing to
+     relay through and we do it ourselves. Blocking, so the caller runs it
+     outside the poll loop and rate-limits it. Returns ok, err. ]]
+local function send_email(to, subject, body)
+  -- test seam: the offline harness intercepts here and never opens a socket
+  local hook = rawget(_G, '__testmail')
+  if hook then hook(to, subject, body); return true end
+  local smtp = require('socket.smtp')
+  local ssl = require('ssl')
+  local params = { mode = 'client', protocol = 'tlsv1_2', verify = 'none', options = 'all' }
+  local function create()
+    local sock = socket.tcp()
+    sock:settimeout(10)
+    return setmetatable({
+      connect = function(_, host, port)
+        local r, e = sock:connect(host, port)
+        if not r then return nil, e end
+        sock = ssl.wrap(sock, params)
+        sock:settimeout(10)
+        return sock:dohandshake()
+      end,
+    }, { __index = function(_, k) return function(_, ...) return sock[k](sock, ...) end end })
+  end
+  return smtp.send({
+    from = '<' .. GMAIL_USER .. '>',
+    rcpt = '<' .. to .. '>',
+    user = GMAIL_USER, password = GMAIL_APP_PASS,
+    server = 'smtp.gmail.com', port = 465, create = create,
+    source = smtp.message({
+      headers = { from = GMAIL_USER, to = to, subject = subject },
+      body = body,
+    }),
+  })
 end
 
 --[[ Count a finished elimination as pee or stool by litter used, and raise a
@@ -559,14 +597,15 @@ end
      done here -- once per cycle, rate-limited -- and never inside the poll
      loop. It runs before the connect/return below so mail still goes out when
      the box is offline. ]]
-if ALERT_EMAIL ~= '' and type(mail) == 'function' then
+if ALERT_EMAIL ~= '' and GMAIL_USER ~= '' and GMAIL_APP_PASS ~= '' then
   local q = storage.get('pawbby_email')
   if type(q) == 'table' and now >= (pawbby.nextemail or 0) then
     pawbby.nextemail = now + ALERT_EMAIL_MIN
     storage.set('pawbby_email', nil)
-    local oke, err = pcall(mail, ALERT_EMAIL, q.s, q.b)
-    log('pawbby: email ' .. (oke and ('sent to ' .. ALERT_EMAIL)
-                             or ('FAILED: ' .. tostring(err))))
+    local pok, sok, serr = pcall(send_email, ALERT_EMAIL, q.s, q.b)
+    local good = pok and sok
+    log('pawbby: email ' .. (good and ('sent to ' .. ALERT_EMAIL)
+        or ('FAILED: ' .. tostring((not pok and sok) or serr))))
   end
 end
 

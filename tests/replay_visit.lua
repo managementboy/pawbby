@@ -56,7 +56,8 @@ local realdate = os.date
 os.date = function(f, t) return realdate(f, t or clock) end
 function log(s) logs[#logs + 1] = string.format('%6d %s', clock - T0, s) end
 function alert(s) alerts[#alerts + 1] = s end
-function mail(to, subj, body) mails[#mails + 1] = { to = to, s = subj, b = body } end
+-- send_email() in the script calls this hook instead of opening a real socket
+function __testmail(to, subj, body) mails[#mails + 1] = { to = to, s = subj, b = body } end
 grp = {
   find = function(ga) return objects[ga] ~= nil and { value = objects[ga] } or nil end,
   getvalue = function(ga) return objects[ga] end,

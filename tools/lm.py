@@ -142,7 +142,7 @@ class LM:
 
 # Secrets stay out of src/: the repo holds ${NAME} placeholders, the LM holds
 # the real values. push fills them in from .env, pull turns them back.
-SECRETS = ("TUYA_KEY", "TUYA_ID", "ALERT_EMAIL")
+SECRETS = ("TUYA_KEY", "TUYA_ID", "ALERT_EMAIL", "GMAIL_USER", "GMAIL_APP_PASSWORD")
 
 
 def render(src):

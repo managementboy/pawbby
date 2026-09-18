@@ -318,4 +318,31 @@ check(logged('HEALTH'), 'health summary logged')
 check(logged('Isma wt -'), 'Isma weight loss flagged')
 check(logged('Charlie no visit'), 'Charlie zero-visit flagged')
 
+-------------------------------------------- 8. weekly report ------------
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+store.pawbby_daily = {}
+for d = 1, 10 do
+  store.pawbby_daily[d] = {
+    d = 'day' .. d,
+    Isma    = { v = 2, pee = 1, stool = 1, w = 5300 },
+    Charlie = { v = 3, pee = 2, stool = 1, w = 4100 },
+  }
+end
+-- jump to a Monday 08:xx (runner's local time) so the weekly trigger fires;
+-- pre-set the day so the midnight rollover does not also fire
+local c = T0
+while not (os.date('%w', c) == '1' and os.date('%H', c) == '08') do c = c + 3600 end
+store.pawbby_day = os.date('%Y-%m-%d', c)
+clock = c
+run({ idle })
+dump('weekly')
+local wr = nil
+for _, m in ipairs(mails) do if m.s and m.s:find('weekly', 1, true) then wr = m end end
+check(wr ~= nil, 'weekly report emailed')
+check(wr.b:find('Isma', 1, true) and wr.b:find('Charlie', 1, true), 'both cats in the report')
+check(wr.b:find('kg', 1, true) ~= nil, 'weight in the report')
+check(wr.b:find('urinations/day', 1, true) ~= nil, 'elimination detail in the report')
+check(logged('weekly report queued'), 'weekly send logged')
+
 print('ALL CHECKS PASSED')

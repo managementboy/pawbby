@@ -41,6 +41,7 @@ local CFG = {
      values are hard-coded. Isma is the larger male, Charlie the smaller
      female. ]]
 local CAT_NAMES = { 'Isma', 'Charlie' }
+local CAT_SEX   = { 'male', 'female' }  -- parallel to CAT_NAMES; the male matters for blockage risk
 local LEARN_MIN    = 6     -- DP 107 samples needed before names are given
 local LEARN_WINDOW = 60    -- newest samples used, so the bands follow weight drift
 local LEARN_GAP    = 400   -- g; closer clusters cannot be told apart safely
@@ -63,6 +64,8 @@ local ALERT_EMAIL     = '${ALERT_EMAIL}'          -- recipient; '' = email off
 local GMAIL_USER      = '${GMAIL_USER}'           -- gmail address (SMTP login + From)
 local GMAIL_APP_PASS  = '${GMAIL_APP_PASSWORD}'   -- a Google App Password (from .env)
 local ALERT_EMAIL_MIN = 300                       -- min seconds between emails (anti-storm)
+local WEEKLY_DAY  = 1    -- weekday to email the weekly report (0=Sun..6=Sat); 1=Mon
+local WEEKLY_HOUR = 8    -- send after this hour, local time
 
 ------------------------------------------------------------------ objects ---
 
@@ -310,7 +313,11 @@ end
 -- never called from the poll loop). Empty recipient disables it.
 local function queue_email(subject, body)
   if ALERT_EMAIL == '' or GMAIL_USER == '' or GMAIL_APP_PASS == '' then return end
-  storage.set('pawbby_email', { s = subject, b = body })
+  local q = storage.get('pawbby_email')
+  if type(q) ~= 'table' or q.s then q = {} end  -- migrate old single-slot form
+  q[#q + 1] = { s = subject, b = body }
+  while #q > 10 do table.remove(q, 1) end
+  storage.set('pawbby_email', q)
 end
 
 --[[ Send one email straight to Gmail's SMTP over implicit SSL (port 465) with
@@ -448,6 +455,67 @@ local function healthrollup(day)
   while #daily > 30 do table.remove(daily, 1) end
   storage.set('pawbby_daily', daily)
   healthcheck(daily)
+end
+
+local function fmtkg(g) return string.format('%.2f kg', (g or 0) / 1000) end
+
+--[[ A plain-language per-cat summary of the last 7 days (with a comparison to
+     the week before), for the weekly status email. Reads the daily history. ]]
+local function weekly_report(daily)
+  local out = { 'PAWBBY weekly cat health report (' .. os.date('%Y-%m-%d') .. ')', '' }
+  for i, name in ipairs(CAT_NAMES) do
+    local recs = {}
+    for _, d in ipairs(daily) do if d[name] then recs[#recs + 1] = d[name] end end
+    local n = #recs
+    local function slice(a, b)
+      local t = {}
+      for k = math.max(1, a), math.min(n, b) do t[#t + 1] = recs[k] end
+      return t
+    end
+    local thisw, lastw = slice(n - 6, n), slice(n - 13, n - 7)
+    local function avg(field, w)
+      local sum = 0
+      for _, r in ipairs(w) do sum = sum + (r[field] or 0) end
+      return sum / math.max(#w, 1)
+    end
+    local function lastweight(w)
+      for k = #w, 1, -1 do if (w[k].w or 0) > 0 then return w[k].w end end
+    end
+    out[#out + 1] = name .. ' (' .. (CAT_SEX[i] or '') .. ')'
+    if #thisw == 0 then
+      out[#out + 1] = '  No data yet.'
+    else
+      local wnow = lastweight(thisw)
+      local wprev = lastweight(lastw)
+      if wnow then
+        local line = '  Weight: ' .. fmtkg(wnow)
+        if wprev and wprev > 0 and wprev ~= wnow then
+          line = line .. string.format(' (%s%.1f%% vs the week before)',
+            (wnow >= wprev) and '+' or '', (wnow - wprev) / wprev * 100)
+        end
+        out[#out + 1] = line
+      end
+      out[#out + 1] = string.format(
+        '  Litter box: %.1f visits/day, ~%.1f urinations/day, ~%.1f stools/day',
+        avg('v', thisw), avg('pee', thisw), avg('stool', thisw))
+      local novisit = 0
+      for _, r in ipairs(thisw) do if (r.v or 0) == 0 then novisit = novisit + 1 end end
+      out[#out + 1] = string.format('  Used the box on %d of %d days', #thisw - novisit, #thisw)
+      local notes = {}
+      if wnow and wprev and wprev > 0 and (wnow - wprev) / wprev <= -0.03 then
+        notes[#notes + 1] = 'weight trending down, worth watching'
+      end
+      if #lastw > 0 and avg('pee', thisw) >= avg('pee', lastw) * 1.5 and avg('pee', thisw) >= 2 then
+        notes[#notes + 1] = 'urinating more than the week before'
+      end
+      if novisit >= 2 then notes[#notes + 1] = novisit .. ' days with no visit' end
+      out[#out + 1] = '  Notes: ' .. (#notes > 0 and table.concat(notes, '; ')
+                       or 'nothing unusual this week')
+    end
+    out[#out + 1] = ''
+  end
+  out[#out + 1] = 'Automated summary from the litter box, not a vet assessment.'
+  return table.concat(out, '\n')
 end
 
 --[[ Lid states. Used to invalidate a weight measurement: with the lid open
@@ -598,11 +666,23 @@ end
      loop. It runs before the connect/return below so mail still goes out when
      the box is offline. ]]
 if ALERT_EMAIL ~= '' and GMAIL_USER ~= '' and GMAIL_APP_PASS ~= '' then
+  -- weekly report: once a week, after WEEKLY_HOUR on WEEKLY_DAY
+  if tonumber(os.date('%w')) == WEEKLY_DAY and tonumber(os.date('%H')) >= WEEKLY_HOUR
+     and (storage.get('pawbby_weekly_sent')) ~= today then
+    storage.set('pawbby_weekly_sent', today)
+    local daily = storage.get('pawbby_daily')
+    if type(daily) == 'table' and #daily > 0 then
+      queue_email('PAWBBY weekly cat health report', weekly_report(daily))
+      log('pawbby: weekly report queued')
+    end
+  end
+  -- send one queued email per cycle, rate-limited, never in the poll loop
   local q = storage.get('pawbby_email')
-  if type(q) == 'table' and now >= (pawbby.nextemail or 0) then
+  if type(q) == 'table' and #q > 0 and now >= (pawbby.nextemail or 0) then
     pawbby.nextemail = now + ALERT_EMAIL_MIN
-    storage.set('pawbby_email', nil)
-    local pok, sok, serr = pcall(send_email, ALERT_EMAIL, q.s, q.b)
+    local msg = table.remove(q, 1)
+    storage.set('pawbby_email', q)
+    local pok, sok, serr = pcall(send_email, ALERT_EMAIL, msg.s, msg.b)
     local good = pok and sok
     log('pawbby: email ' .. (good and ('sent to ' .. ALERT_EMAIL)
         or ('FAILED: ' .. tostring((not pok and sok) or serr))))

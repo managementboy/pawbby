@@ -77,6 +77,9 @@ diagnosis. It is biased to alert: a false alarm beats a missed problem.
 - Surfaced on `32/3/20` (Health alert, bool) and `32/3/21` (Health note, short
   text), plus the LM log and an LM alert. History accrues in LM storage
   (`pawbby_daily`).
+- **Weekly report** (Monday, after 08:00): an email with a per-cat summary of
+  the last 7 days -- weight and trend, visits/urinations/stools per day, days
+  used, and any concerns. Schedule is `WEEKLY_DAY`/`WEEKLY_HOUR` in the config.
 
 Not a substitute for a vet; thresholds are in the config block of the resident
 script and will want tuning against real data.

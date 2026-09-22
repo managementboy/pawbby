@@ -111,8 +111,9 @@ local function visitclean(w, used, pre)
     { { ['116'] = 'cat_near_leave' } }, { { ['116'] = 'work_idle' } },
     { { ['116'] = 'work_aclean' } },
     { { ['112'] = pre - used }, { ['116'] = 'work_idle' } },
-    idle,
   })
+  -- let the visit settle (15 s) and the litter-measure delay (30 s) elapse
+  for _ = 1, 10 do run({ idle }) end
 end
 
 local function check(c, m) if not c then error('FAIL: ' .. m, 0) end end
@@ -280,12 +281,10 @@ end
 visitclean(5290, 20)                            -- 20 g litter -> stool
 for i = 1, 5 do visitclean(5300 + i * 4, 80) end -- 80 g litter -> urine, x5
 dump('litter / acute')
-check(logged('Isma stool, litter used 20'), 'small litter delta -> stool')
-check(logged('Isma urine, litter used 80'), 'large litter delta -> urine')
+check(logged('litter used 20 g -> stool'), 'small litter delta -> stool (not discarded)')
+check(logged('litter used 80 g -> urination'), 'large litter delta -> urination')
 local el = store.pawbby_elim or {}
-check(el.Isma and el.Isma.pee == 5 and el.Isma.stool == 1,
-  'pee/stool tallied (' .. tostring(el.Isma and el.Isma.pee) .. '/'
-  .. tostring(el.Isma and el.Isma.stool) .. ')')
+check(el.Isma and el.Isma.pee == 5, 'urinations tallied (' .. tostring(el.Isma and el.Isma.pee) .. ')')
 local lit = store.pawbby_litter or {}
 local used20, used80 = false, false
 for _, r in ipairs(lit) do

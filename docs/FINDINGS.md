@@ -108,7 +108,12 @@ Written so the same ground is not covered twice.
 The weekly report splits eliminations into urinations and stools by litter used
 per visit (tray-weight drop across the clean that follows). The threshold
 `URINE_LITTER_MIN` (60 g) is a **guess** -- early reports showed ~0 stools,
-which is a threshold/coverage artifact, not reality. Every clean-based
+which was a bug: a stool clumps almost no litter (drop ~0 g), and the old
+code discarded any drop under 10 g as noise -- throwing every stool away.
+Fixed 2026-09-22: every DP 107 visit is an elimination, a big litter drop is a
+urination and the rest are stools (stools = visits - urinations, derived), and
+the tray is read after a LITTER_SETTLE delay so a real pee is not
+under-measured. The urination threshold is still provisional. Every clean-based
 measurement is now persisted to `pawbby_litter` in storage (time, cat, weight,
 grams). Once a week or two of real rows exist, read them, look at the
 distribution, set the threshold, and check whether both cats' visits actually

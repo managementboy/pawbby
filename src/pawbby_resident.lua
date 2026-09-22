@@ -60,6 +60,7 @@ local HEALTH_WEIGHT_DROP = 0.05  -- >= 5 % weight loss vs baseline alerts
 local HEALTH_SPIKE       = 2.0   -- a daily count >= 2x its baseline alerts
 local URINE_LITTER_MIN   = 60    -- g of litter used at/above which a visit is a pee (provisional)
 local URINE_ACUTE_DAY    = 5     -- urinations in one day (one cat) -> same-day alert
+local LITTER_SETTLE      = 30    -- seconds to let DP 112 settle after a clean before measuring
 local ALERT_EMAIL     = '${ALERT_EMAIL}'          -- recipient; '' = email off
 local GMAIL_USER      = '${GMAIL_USER}'           -- gmail address (SMTP login + From)
 local GMAIL_APP_PASS  = '${GMAIL_APP_PASSWORD}'   -- a Google App Password (from .env)
@@ -360,16 +361,14 @@ end
      same-day alert if one cat urinates suspiciously often. This needs no
      baseline -- it is the acute urinary / blockage catch (a blocked male cat
      is an emergency). ]]
-local function tally_elim(who, used)
+local function tally_pee(who)
   local e = storage.get('pawbby_elim')
   if type(e) ~= 'table' then e = {} end
-  local c = e[who] or { pee = 0, stool = 0 }
-  local kind = used >= URINE_LITTER_MIN and 'urine' or 'stool'
-  if kind == 'urine' then c.pee = c.pee + 1 else c.stool = c.stool + 1 end
+  local c = e[who] or { pee = 0 }
+  c.pee = (c.pee or 0) + 1
   e[who] = c
   storage.set('pawbby_elim', e)
-  log('pawbby: ' .. who .. ' ' .. kind .. ', litter used ' .. used
-      .. ' g (today pee=' .. c.pee .. ' stool=' .. c.stool .. ')')
+  log('pawbby: ' .. who .. ' urination (today pee=' .. c.pee .. ')')
   if c.pee >= URINE_ACUTE_DAY then
     put(GA.healthbad, true)
     put(GA.healthmsg, (who .. ' pees ' .. c.pee):sub(1, 14))
@@ -448,7 +447,7 @@ local function healthrollup(day)
   local rec = { d = day }
   for i, name in ipairs(CAT_NAMES) do
     local e = el[name] or {}
-    rec[name] = { v = cv[name] or 0, pee = e.pee or 0, stool = e.stool or 0,
+    rec[name] = { v = cv[name] or 0, pee = e.pee or 0,
                   w = tonumber(grp.getvalue(CAT_KG[i])) or 0 }
   end
   daily[#daily + 1] = rec
@@ -497,7 +496,7 @@ local function weekly_report(daily)
       end
       out[#out + 1] = string.format(
         '  Litter box: %.1f visits/day, ~%.1f urinations/day, ~%.1f stools/day',
-        avg('v', thisw), avg('pee', thisw), avg('stool', thisw))
+        avg('v', thisw), avg('pee', thisw), math.max(avg('v', thisw) - avg('pee', thisw), 0))
       local novisit = 0
       for _, r in ipairs(thisw) do if (r.v or 0) == 0 then novisit = novisit + 1 end end
       out[#out + 1] = string.format('  Used the box on %d of %d days', #thisw - novisit, #thisw)
@@ -894,23 +893,12 @@ while socket.gettime() < deadline do
              and pawbby.lastvisit and not pawbby.lastvisit.done
              and now - (pawbby.lastvisit.t or 0) < 300 then
             pawbby.lastvisit.done = true
-            local used = math.floor((pawbby.lastvisit.wbase or 0) - (pawbby.w or 0) + 0.5)
-            --[[ Persist every clean-based measurement so the pee/stool
-                 threshold can be calibrated from real data (the log rotates
-                 too fast to rely on). One row per weighed visit that a clean
-                 followed: time, cat, cat weight, litter grams used. ]]
-            local lit = storage.get('pawbby_litter')
-            if type(lit) ~= 'table' then lit = {} end
-            lit[#lit + 1] = { t = now, who = pawbby.lastvisit.who,
-                              w = pawbby.lastvisit.wt, used = used }
-            while #lit > 200 do table.remove(lit, 1) end
-            storage.set('pawbby_litter', lit)
-            if used >= 10 and pawbby.lastvisit.who and pawbby.lastvisit.who ~= 'Unknown' then
-              tally_elim(pawbby.lastvisit.who, used)
-            else
-              log('pawbby: post-clean litter delta ' .. used .. ' g ('
-                  .. tostring(pawbby.lastvisit.who) .. '), not tallied')
-            end
+            -- the drop in tray weight since before the visit measures litter
+            -- used, but DP 112 lags the clean; measure after a settle (below)
+            pawbby.litterpending = {
+              who = pawbby.lastvisit.who, wt = pawbby.lastvisit.wt,
+              wbase = pawbby.lastvisit.wbase or 0, due = now + LITTER_SETTLE,
+            }
           end
           pawbby.laststate = s
 
@@ -936,6 +924,7 @@ while socket.gettime() < deadline do
               pawbby.visit107, pawbby.visit107w = nil, nil
               pawbby.wbase = pawbby.w or 0
               pawbby.wmax  = pawbby.w or 0
+              pawbby.litterpending = nil
             end
           elseif not present and pawbby.inbox then
             pawbby.inbox = false
@@ -980,5 +969,28 @@ while socket.gettime() < deadline do
     -- badjson / nojson carry the decrypted text so the frame can be read
     log('pawbby: ' .. tostring(info) .. ' (cmd ' .. tostring(rcmd) .. ')'
         .. (rplain and (' ' .. string.format('%q', rplain:sub(1, 200))) or ''))
+  end
+end
+
+--[[ Litter-use measurement, taken LITTER_SETTLE seconds after a clean so the
+     tray weight (DP 112) has settled. Every DP 107 visit is an elimination:
+     a big litter drop is a urination (tally_pee); a small one is a stool,
+     which needs no tally (stools = visits - urinations in the reports). The
+     raw grams are stored to pawbby_litter to calibrate URINE_LITTER_MIN. ]]
+if pawbby.litterpending and not pawbby.inbox and not pawbby.settle
+   and now >= pawbby.litterpending.due then
+  local lp = pawbby.litterpending
+  pawbby.litterpending = nil
+  local used = math.floor((lp.wbase or 0) - (pawbby.w or 0) + 0.5)
+  local lit = storage.get('pawbby_litter')
+  if type(lit) ~= 'table' then lit = {} end
+  lit[#lit + 1] = { t = now, who = lp.who, w = lp.wt, used = used }
+  while #lit > 200 do table.remove(lit, 1) end
+  storage.set('pawbby_litter', lit)
+  if lp.who and lp.who ~= 'Unknown' and used >= URINE_LITTER_MIN then
+    tally_pee(lp.who)
+    log('pawbby: ' .. lp.who .. ' litter used ' .. used .. ' g -> urination')
+  else
+    log('pawbby: ' .. tostring(lp.who) .. ' litter used ' .. used .. ' g -> stool/other')
   end
 end

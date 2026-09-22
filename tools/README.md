@@ -18,6 +18,7 @@ contains any secret value from `.env`; install it in every clone with
 | `deploy.sh --dry-run` | Diff local `src/` against what is on the LM. No writes. |
 | `logs.sh [N] [filter]` | Last N lines of the LM script log matching `filter` (default `pawbby`). `-f` follows, `-e` reads the error log. |
 | `../tests/run.sh` | Offline: LuaJIT syntax check of `src/*.lua` and a replay of real visit sequences through the resident script. Run before every deploy. |
+| `litter.py` | Read the `pawbby_litter` calibration history off the LM (via the spare slot, restored after) and summarise the litter-used distribution + a suggested urination threshold. Run after a few days of real visits, then set `URINE_LITTER_MIN` and deploy. |
 | `lm.py` | The client both wrap. `pull <id> <file>` fetches any script; `press <ga>` sets a command object true like the object list does (refuses 32/3/11, the dump); `get <path>` is a raw authenticated GET for poking at the admin UI. |
 
 Pull the LM's current copy back into the repo (e.g. after someone edited in

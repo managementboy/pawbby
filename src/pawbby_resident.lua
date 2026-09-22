@@ -296,7 +296,7 @@ local function recordcat(w, payload)
                      .. math.floor(bands[2] + 0.5) .. ' g') or why)
       .. ') sample #' .. #samples)
   -- remember this visit so the following clean's litter drop can be attributed
-  pawbby.lastvisit = { who = who, wbase = pawbby.wbase or 0, t = os.time(), done = false }
+  pawbby.lastvisit = { who = who, wt = w, wbase = pawbby.wbase or 0, t = os.time(), done = false }
 end
 
 local function median(t)
@@ -895,6 +895,16 @@ while socket.gettime() < deadline do
              and now - (pawbby.lastvisit.t or 0) < 300 then
             pawbby.lastvisit.done = true
             local used = math.floor((pawbby.lastvisit.wbase or 0) - (pawbby.w or 0) + 0.5)
+            --[[ Persist every clean-based measurement so the pee/stool
+                 threshold can be calibrated from real data (the log rotates
+                 too fast to rely on). One row per weighed visit that a clean
+                 followed: time, cat, cat weight, litter grams used. ]]
+            local lit = storage.get('pawbby_litter')
+            if type(lit) ~= 'table' then lit = {} end
+            lit[#lit + 1] = { t = now, who = pawbby.lastvisit.who,
+                              w = pawbby.lastvisit.wt, used = used }
+            while #lit > 200 do table.remove(lit, 1) end
+            storage.set('pawbby_litter', lit)
             if used >= 10 and pawbby.lastvisit.who and pawbby.lastvisit.who ~= 'Unknown' then
               tally_elim(pawbby.lastvisit.who, used)
             else

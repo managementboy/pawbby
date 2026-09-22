@@ -286,6 +286,14 @@ local el = store.pawbby_elim or {}
 check(el.Isma and el.Isma.pee == 5 and el.Isma.stool == 1,
   'pee/stool tallied (' .. tostring(el.Isma and el.Isma.pee) .. '/'
   .. tostring(el.Isma and el.Isma.stool) .. ')')
+local lit = store.pawbby_litter or {}
+local used20, used80 = false, false
+for _, r in ipairs(lit) do
+  if r.used == 20 then used20 = true end
+  if r.used == 80 then used80 = true end
+end
+check(#lit == 6 and used20 and used80,
+  'litter-use measurements persisted for calibration (' .. #lit .. ' rows)')
 check(objects['32/3/20'] == true, 'acute urination raises health alert')
 check(objects['32/3/21'] == 'Isma pees 5', 'acute alert note set on the KNX object')
 check(table.concat(alerts, ' '):find('urinated 5x today', 1, true) ~= nil,

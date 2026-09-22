@@ -103,6 +103,18 @@ Written so the same ground is not covered twice.
   deviations apart. Until then, or if the cats weigh too alike, the name is
   `Unknown` and the log says why. Unconfirmed until real visits accumulate.
 
+## Pee vs stool: not calibrated yet
+
+The weekly report splits eliminations into urinations and stools by litter used
+per visit (tray-weight drop across the clean that follows). The threshold
+`URINE_LITTER_MIN` (60 g) is a **guess** -- early reports showed ~0 stools,
+which is a threshold/coverage artifact, not reality. Every clean-based
+measurement is now persisted to `pawbby_litter` in storage (time, cat, weight,
+grams). Once a week or two of real rows exist, read them, look at the
+distribution, set the threshold, and check whether both cats' visits actually
+produce a measurement (a visit with no auto-clean yields none). Until then,
+treat the pee/stool counts as provisional.
+
 ## Clean now
 
 - Pawbby-Reborn concluded the manual clean could not be triggered remotely:

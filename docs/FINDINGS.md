@@ -103,24 +103,30 @@ Written so the same ground is not covered twice.
   deviations apart. Until then, or if the cats weigh too alike, the name is
   `Unknown` and the log says why. Unconfirmed until real visits accumulate.
 
-## Pee vs stool: not calibrated yet
+## Pee vs stool by litter use: tried and abandoned
 
-The weekly report splits eliminations into urinations and stools by litter used
-per visit (tray-weight drop across the clean that follows). The threshold
-`URINE_LITTER_MIN` (60 g) is a **guess** -- early reports showed ~0 stools,
-which was a bug: a stool clumps almost no litter (drop ~0 g), and the old
-code discarded any drop under 10 g as noise -- throwing every stool away.
-Fixed 2026-09-22: every DP 107 visit is an elimination, a big litter drop is a
-urination and the rest are stools (stools = visits - urinations, derived), and
-the tray is read after a LITTER_SETTLE delay so a real pee is not
-under-measured. The urination threshold is still provisional. Every clean-based
-measurement is now persisted to `pawbby_litter` in storage (time, cat, weight,
-grams). Once a week or two of real rows exist, read them, look at the
-distribution, set the threshold, and check whether both cats' visits actually
-produce a measurement (a visit with no auto-clean yields none). Until then,
-treat the pee/stool counts as provisional.
+The idea: tell a urination from a stool by how much litter a visit consumed,
+measured as the tray-weight drop (DP 112) across the clean that follows. A pee
+clumps litter (big drop), a stool barely any.
 
-## Clean now
+It does not work on this box. After ~200 real measurements (`tools/litter.py`
+read the stored `pawbby_litter`):
+
+- **Half the readings (98/200) were the cat's own weight** (|drop| ~4100-5300 g)
+  leaking in -- the baseline or post-clean reading was taken with a cat on the
+  scale, even with a settle delay and a cat-weight reject.
+- The **102 valid readings were one blob of noise centred on 0 g (sd +/-93 g)**,
+  not two clusters. Per cat: Isma mean -9 g, Charlie mean +33 g. The litter a
+  pee clumps is smaller than the DP 112 noise, so there is no signal to
+  threshold.
+
+Removed 2026-11-09. Health monitoring now uses **visit frequency** (reliable):
+a cat with a urinary problem or blockage makes many trips to the box, so the
+acute alert fires on an unusually busy day of visits (`ACUTE_VISITS`), and the
+trend/weekly use visits + weight. `tools/litter.py` and the `pawbby_litter`
+store were the diagnosis for this dead end.
+
+## Clean now## Clean now
 
 - Pawbby-Reborn concluded the manual clean could not be triggered remotely:
   every DP 106 command byte 01-30, DPs 1-66, 101, 105, 107-150 and the Tuya

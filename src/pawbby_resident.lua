@@ -49,18 +49,18 @@ local MATCH_DEV    = 700   -- g; further than this from both cats -> Unknown
 
 --[[ Health monitoring. Decision-support, NOT a diagnosis: it flags a change
      from each cat's own baseline so the owner checks with a vet, and it is
-     biased to alert (a false alarm beats a missed problem). Urine vs stool is
-     told apart by litter used per visit -- a pee clumps a lot of litter, a
-     stool little -- measured as the tray-weight drop across the clean that
-     follows a visit. The gram threshold is provisional; raw grams are logged
-     so it can be calibrated. ]]
+     biased to alert (a false alarm beats a missed problem). It tracks litter-
+     box VISIT FREQUENCY and WEIGHT per cat -- both measured reliably.
+     (Telling urine from stool by litter used was tried and abandoned: over 200
+     real measurements the tray-weight drop was noise centred on 0 g, with half
+     the readings corrupted by the cat's own weight; see FINDINGS.md.) A cat
+     with a urinary problem or blockage makes many trips to the box, so visit
+     frequency is the signal that matters. ]]
 local HEALTH_MIN_DAYS    = 3     -- start trend alerts after only a few days
 local HEALTH_BASE_DAYS   = 14    -- rolling baseline window (days)
 local HEALTH_WEIGHT_DROP = 0.05  -- >= 5 % weight loss vs baseline alerts
 local HEALTH_SPIKE       = 2.0   -- a daily count >= 2x its baseline alerts
-local URINE_LITTER_MIN   = 60    -- g of litter used at/above which a visit is a pee (provisional)
-local URINE_ACUTE_DAY    = 5     -- urinations in one day (one cat) -> same-day alert
-local LITTER_SETTLE      = 30    -- seconds to let DP 112 settle after a clean before measuring
+local ACUTE_VISITS       = 8     -- visits in one day (one cat) -> same-day alert (no baseline)
 local ALERT_EMAIL     = '${ALERT_EMAIL}'          -- recipient; '' = email off
 local GMAIL_USER      = '${GMAIL_USER}'           -- gmail address (SMTP login + From)
 local GMAIL_APP_PASS  = '${GMAIL_APP_PASSWORD}'   -- a Google App Password (from .env)
@@ -296,8 +296,7 @@ local function recordcat(w, payload)
       .. (bands and ('bands ' .. math.floor(bands[1] + 0.5) .. '/'
                      .. math.floor(bands[2] + 0.5) .. ' g') or why)
       .. ') sample #' .. #samples)
-  -- remember this visit so the following clean's litter drop can be attributed
-  pawbby.lastvisit = { who = who, wt = w, wbase = pawbby.wbase or 0, t = os.time(), done = false }
+  return who
 end
 
 local function median(t)
@@ -357,31 +356,6 @@ local function send_email(to, subject, body)
   })
 end
 
---[[ Count a finished elimination as pee or stool by litter used, and raise a
-     same-day alert if one cat urinates suspiciously often. This needs no
-     baseline -- it is the acute urinary / blockage catch (a blocked male cat
-     is an emergency). ]]
-local function tally_pee(who)
-  local e = storage.get('pawbby_elim')
-  if type(e) ~= 'table' then e = {} end
-  local c = e[who] or { pee = 0 }
-  c.pee = (c.pee or 0) + 1
-  e[who] = c
-  storage.set('pawbby_elim', e)
-  log('pawbby: ' .. who .. ' urination (today pee=' .. c.pee .. ')')
-  if c.pee >= URINE_ACUTE_DAY then
-    put(GA.healthbad, true)
-    put(GA.healthmsg, (who .. ' pees ' .. c.pee):sub(1, 14))
-    alert('PAWBBY health: ' .. who .. ' urinated ' .. c.pee
-          .. 'x today, possible urinary problem -- check with a vet')
-    queue_email('PAWBBY: ' .. who .. ' urinating a lot',
-      who .. ' urinated ' .. c.pee .. ' times today. Frequent urination can mean a'
-      .. ' urinary problem' .. (who == CAT_NAMES[1]
-         and ', and in a male cat a blockage is an emergency' or '')
-      .. '. Please check ' .. who .. ' and consider a vet.')
-  end
-end
-
 --[[ Compare each cat's recent use and weight against its own rolling baseline
      and flag a change. Biased to alert. Sets the health objects; the full text
      also goes to the log and an LM alert. ]]
@@ -393,12 +367,11 @@ local function healthcheck(daily)
     return median(b)
   end
   for _, name in ipairs(CAT_NAMES) do
-    local vis, pees, wts, y = {}, {}, {}, nil
+    local vis, wts, y = {}, {}, nil
     for _, d in ipairs(daily) do
       local c = d[name]
       if c then
         vis[#vis + 1] = c.v or 0
-        pees[#pees + 1] = c.pee or 0
         if c.w and c.w > 0 then wts[#wts + 1] = c.w end
         y = c
       end
@@ -408,9 +381,8 @@ local function healthcheck(daily)
       if mv and mv >= 1 and (y.v or 0) == 0 then
         issues[#issues + 1] = name .. ' no visit'
       end
-      local mp = base(pees)
-      if mp and mp >= 1 and (y.pee or 0) >= mp * HEALTH_SPIKE then
-        issues[#issues + 1] = name .. ' pees ' .. (y.pee or 0) .. '/' .. math.floor(mp + 0.5)
+      if mv and mv >= 2 and (y.v or 0) >= mv * HEALTH_SPIKE then
+        issues[#issues + 1] = name .. ' visits ' .. (y.v or 0) .. '/' .. math.floor(mv + 0.5)
       end
     end
     if #wts >= HEALTH_MIN_DAYS then
@@ -437,17 +409,15 @@ local function healthcheck(daily)
   end
 end
 
---[[ Record the day that just ended (per-cat visits, pees, stools, last weight)
-     and run the trend check. Called once at the midnight rollover. ]]
+--[[ Record the day that just ended (per-cat visits and last weight) and run
+     the trend check. Called once at the midnight rollover. ]]
 local function healthrollup(day)
   local daily = storage.get('pawbby_daily')
   if type(daily) ~= 'table' then daily = {} end
   local cv = storage.get('pawbby_catvisits'); if type(cv) ~= 'table' then cv = {} end
-  local el = storage.get('pawbby_elim');      if type(el) ~= 'table' then el = {} end
   local rec = { d = day }
   for i, name in ipairs(CAT_NAMES) do
-    local e = el[name] or {}
-    rec[name] = { v = cv[name] or 0, pee = e.pee or 0,
+    rec[name] = { v = cv[name] or 0,
                   w = tonumber(grp.getvalue(CAT_KG[i])) or 0 }
   end
   daily[#daily + 1] = rec
@@ -494,9 +464,7 @@ local function weekly_report(daily)
         end
         out[#out + 1] = line
       end
-      out[#out + 1] = string.format(
-        '  Litter box: %.1f visits/day, ~%.1f urinations/day, ~%.1f stools/day',
-        avg('v', thisw), avg('pee', thisw), math.max(avg('v', thisw) - avg('pee', thisw), 0))
+      out[#out + 1] = string.format('  Litter box: %.1f visits/day', avg('v', thisw))
       local novisit = 0
       for _, r in ipairs(thisw) do if (r.v or 0) == 0 then novisit = novisit + 1 end end
       out[#out + 1] = string.format('  Used the box on %d of %d days', #thisw - novisit, #thisw)
@@ -504,8 +472,8 @@ local function weekly_report(daily)
       if wnow and wprev and wprev > 0 and (wnow - wprev) / wprev <= -0.03 then
         notes[#notes + 1] = 'weight trending down, worth watching'
       end
-      if #lastw > 0 and avg('pee', thisw) >= avg('pee', lastw) * 1.5 and avg('pee', thisw) >= 2 then
-        notes[#notes + 1] = 'urinating more than the week before'
+      if #lastw > 0 and avg('v', thisw) >= avg('v', lastw) * 1.5 and avg('v', thisw) >= 2 then
+        notes[#notes + 1] = 'using the box more than the week before'
       end
       if novisit >= 2 then notes[#notes + 1] = novisit .. ' days with no visit' end
       out[#out + 1] = '  Notes: ' .. (#notes > 0 and table.concat(notes, '; ')
@@ -528,11 +496,6 @@ local BUSY_STATES = {
   work_empty = true, work_dumping = true, work_resetting = true,
 }
 
--- states that finish by removing a clump; the tray-weight drop across one of
--- these (never work_empty, which dumps everything) measures litter used
-local CLEAN_STATES = {
-  work_aclean = true, work_smooth = true, work_mclean = true,
-}
 
 --[[ How long a visit stays open after the box reports the cat gone. Two
      reasons, both from the 2026-09-17 09:27 visit that measured 0 g:
@@ -855,7 +818,26 @@ while socket.gettime() < deadline do
           local w = weight107(s)
           if w then
             pawbby.visit107w = w
-            recordcat(w, s)
+            local who = recordcat(w, s)
+            --[[ Acute: an unusually busy day of litter-box visits can mean a
+                 urinary problem or blockage (more so in a male cat). Alert
+                 once, when the per-cat daily count first crosses ACUTE_VISITS;
+                 catvisits resets at midnight so this fires at most once a day. ]]
+            if who and who ~= 'Unknown' then
+              local cvv = storage.get('pawbby_catvisits')
+              local nvis = (type(cvv) == 'table' and cvv[who]) or 0
+              if nvis == ACUTE_VISITS then
+                put(GA.healthbad, true)
+                put(GA.healthmsg, (who .. ' ' .. nvis .. ' visits'):sub(1, 14))
+                alert('PAWBBY health: ' .. who .. ' used the box ' .. nvis
+                      .. 'x today, possible urinary problem -- check with a vet')
+                queue_email('PAWBBY: ' .. who .. ' at the box a lot',
+                  who .. ' used the litter box ' .. nvis .. ' times today. Frequent'
+                  .. ' trips can mean a urinary problem' .. (who == CAT_NAMES[1]
+                     and ', and in a male cat a blockage is an emergency' or '')
+                  .. '. Please check ' .. who .. ' and consider a vet.')
+              end
+            end
           else
             log('pawbby: dp 107 layout not recognised, no cat weight')
           end
@@ -885,23 +867,6 @@ while socket.gettime() < deadline do
             if BUSY_STATES[s] then pawbby.cleansent = nil end
           end
 
-          --[[ Litter-use capture: when a clean finishes, the drop in tray
-               weight since before the last visit approximates the litter the
-               cat used, which tells a pee (lots of litter) from a stool
-               (little). Threshold URINE_LITTER_MIN; raw grams are logged. ]]
-          if CLEAN_STATES[pawbby.laststate or ''] and s == 'work_idle'
-             and pawbby.lastvisit and not pawbby.lastvisit.done
-             and now - (pawbby.lastvisit.t or 0) < 300 then
-            pawbby.lastvisit.done = true
-            -- the drop in tray weight since before the visit measures litter
-            -- used, but DP 112 lags the clean; measure after a settle (below)
-            pawbby.litterpending = {
-              who = pawbby.lastvisit.who, wt = pawbby.lastvisit.wt,
-              wbase = pawbby.lastvisit.wbase or 0, due = now + LITTER_SETTLE,
-            }
-          end
-          pawbby.laststate = s
-
           -- litter level, reported as a state pair
           if s == 'cat_litter_little' then put(GA.litterlow, true) end
           if s:find('cat_litter_eno') then put(GA.litterlow, false) end
@@ -924,7 +889,6 @@ while socket.gettime() < deadline do
               pawbby.visit107, pawbby.visit107w = nil, nil
               pawbby.wbase = pawbby.w or 0
               pawbby.wmax  = pawbby.w or 0
-              pawbby.litterpending = nil
             end
           elseif not present and pawbby.inbox then
             pawbby.inbox = false
@@ -972,25 +936,3 @@ while socket.gettime() < deadline do
   end
 end
 
---[[ Litter-use measurement, taken LITTER_SETTLE seconds after a clean so the
-     tray weight (DP 112) has settled. Every DP 107 visit is an elimination:
-     a big litter drop is a urination (tally_pee); a small one is a stool,
-     which needs no tally (stools = visits - urinations in the reports). The
-     raw grams are stored to pawbby_litter to calibrate URINE_LITTER_MIN. ]]
-if pawbby.litterpending and not pawbby.inbox and not pawbby.settle
-   and now >= pawbby.litterpending.due then
-  local lp = pawbby.litterpending
-  pawbby.litterpending = nil
-  local used = math.floor((lp.wbase or 0) - (pawbby.w or 0) + 0.5)
-  local lit = storage.get('pawbby_litter')
-  if type(lit) ~= 'table' then lit = {} end
-  lit[#lit + 1] = { t = now, who = lp.who, w = lp.wt, used = used }
-  while #lit > 200 do table.remove(lit, 1) end
-  storage.set('pawbby_litter', lit)
-  if lp.who and lp.who ~= 'Unknown' and used >= URINE_LITTER_MIN then
-    tally_pee(lp.who)
-    log('pawbby: ' .. lp.who .. ' litter used ' .. used .. ' g -> urination')
-  else
-    log('pawbby: ' .. tostring(lp.who) .. ' litter used ' .. used .. ' g -> stool/other')
-  end
-end

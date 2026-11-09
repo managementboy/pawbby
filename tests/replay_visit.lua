@@ -99,23 +99,6 @@ local function visit(w, base)
   })
 end
 
--- a visit followed by an auto-clean that drops the tray by `used` grams.
--- The tray is settled to `pre` before entry so wbase (captured at cat_enter)
--- is known, and the post-clean reading is pre-used.
-local function visitclean(w, used, pre)
-  pre = pre or 2342
-  run({
-    { { ['112'] = pre } },
-    { { ['116'] = 'cat_enter' } }, { { ['112'] = pre + w } },
-    { { ['107'] = p107(w) } }, { { ['112'] = pre } },
-    { { ['116'] = 'cat_near_leave' } }, { { ['116'] = 'work_idle' } },
-    { { ['116'] = 'work_aclean' } },
-    { { ['112'] = pre - used }, { ['116'] = 'work_idle' } },
-  })
-  -- let the visit settle (15 s) and the litter-measure delay (30 s) elapse
-  for _ = 1, 10 do run({ idle }) end
-end
-
 local function check(c, m) if not c then error('FAIL: ' .. m, 0) end end
 local function logged(text)
   return table.concat(logs, '\n'):find(text, 1, true) ~= nil
@@ -265,10 +248,10 @@ check(objects['32/3/16'] == 0 and objects['32/3/18'] == 0 and objects['32/3/2'] 
   and objects['32/3/15'] == 'None' and objects['32/3/14'] == 'Unknown',
   'initial values match the datatype')
 
--------------------------------------------- 6. litter: pee vs stool -----
+-------------------------------------- 6. acute visit-frequency alert ----
 world()
 run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
--- seed enough named samples so visits identify as Isma
+-- seed named samples so visits identify as Isma
 store.pawbby_samples = {}
 for _, w in ipairs({ 5300, 5280, 5320 }) do
   store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0, w = w, src = '107', who = 'Isma' }
@@ -276,30 +259,18 @@ end
 for _, w in ipairs({ 4100, 4120, 4090 }) do
   store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0, w = w, src = '107', who = 'Charlie' }
 end
--- weights vary slightly so each DP 107 payload differs (identical payloads
--- within 60 s are dropped as retransmits, exactly as on the real box)
-visitclean(5290, 20)                            -- 20 g litter -> stool
-for i = 1, 5 do visitclean(5300 + i * 4, 80) end -- 80 g litter -> urine, x5
-dump('litter / acute')
-check(logged('litter used 20 g -> stool'), 'small litter delta -> stool (not discarded)')
-check(logged('litter used 80 g -> urination'), 'large litter delta -> urination')
-local el = store.pawbby_elim or {}
-check(el.Isma and el.Isma.pee == 5, 'urinations tallied (' .. tostring(el.Isma and el.Isma.pee) .. ')')
-local lit = store.pawbby_litter or {}
-local used20, used80 = false, false
-for _, r in ipairs(lit) do
-  if r.used == 20 then used20 = true end
-  if r.used == 80 then used80 = true end
-end
-check(#lit == 6 and used20 and used80,
-  'litter-use measurements persisted for calibration (' .. #lit .. ' rows)')
-check(objects['32/3/20'] == true, 'acute urination raises health alert')
-check(objects['32/3/21'] == 'Isma pees 5', 'acute alert note set on the KNX object')
-check(table.concat(alerts, ' '):find('urinated 5x today', 1, true) ~= nil,
-  'acute urination raises an LM alert')
+-- 8 Isma visits in one day (weights vary so the payloads differ, not retransmits)
+for i = 1, 8 do visit(5300 + i * 3) end
+dump('acute visits')
+check((store.pawbby_catvisits or {}).Isma == 8,
+  'Isma visits counted (' .. tostring((store.pawbby_catvisits or {}).Isma) .. ')')
+check(objects['32/3/20'] == true, 'acute visit frequency raises health alert')
+check(objects['32/3/21'] == 'Isma 8 visits', 'acute note set on the KNX object')
+check(table.concat(alerts, ' '):find('used the box 8x today', 1, true) ~= nil,
+  'acute raises an LM alert')
 local emailed = false
-for _, m in ipairs(mails) do if m.b:find('urinated', 1, true) then emailed = true end end
-check(emailed, 'acute urination sends an email')
+for _, m in ipairs(mails) do if m.b:find('used the litter box 8', 1, true) then emailed = true end end
+check(emailed, 'acute sends an email')
 
 -------------------------------------- 7. trend: weight loss + no visit --
 world()
@@ -308,15 +279,14 @@ store.pawbby_daily = {}
 for d = 1, 6 do
   store.pawbby_daily[d] = {
     d = 'day' .. d,
-    Isma    = { v = 2, pee = 1, stool = 1, w = 5300 },
-    Charlie = { v = 2, pee = 1, stool = 1, w = 4100 },
+    Isma    = { v = 2, w = 5300 },
+    Charlie = { v = 2, w = 4100 },
   }
 end
 -- yesterday: Isma weight dropped to 4900 g (-8%), Charlie did not visit
 objects['32/3/16'] = 4900
 objects['32/3/17'] = 4100
 store.pawbby_catvisits = { Isma = 2 }
-store.pawbby_elim = { Isma = { pee = 1, stool = 1 } }
 clock = clock + 86400
 run({ idle })
 dump('trend')
@@ -332,8 +302,8 @@ store.pawbby_daily = {}
 for d = 1, 10 do
   store.pawbby_daily[d] = {
     d = 'day' .. d,
-    Isma    = { v = 2, pee = 1, stool = 1, w = 5300 },
-    Charlie = { v = 3, pee = 2, stool = 1, w = 4100 },
+    Isma    = { v = 2, w = 5300 },
+    Charlie = { v = 3, w = 4100 },
   }
 end
 -- jump to a Monday 08:xx (runner's local time) so the weekly trigger fires;
@@ -349,7 +319,8 @@ for _, m in ipairs(mails) do if m.s and m.s:find('weekly', 1, true) then wr = m 
 check(wr ~= nil, 'weekly report emailed')
 check(wr.b:find('Isma', 1, true) and wr.b:find('Charlie', 1, true), 'both cats in the report')
 check(wr.b:find('kg', 1, true) ~= nil, 'weight in the report')
-check(wr.b:find('urinations/day', 1, true) ~= nil, 'elimination detail in the report')
+check(wr.b:find('visits/day', 1, true) ~= nil, 'visit frequency in the report')
+check(wr.b:find('urinations', 1, true) == nil, 'no unreliable urination claim in the report')
 check(logged('weekly report queued'), 'weekly send logged')
 
 print('ALL CHECKS PASSED')

@@ -64,22 +64,22 @@ The box weighs each cat and cleans after each visit, which is enough to watch
 for changes in toilet habits -- an early warning to see a vet, **not** a
 diagnosis. It is biased to alert: a false alarm beats a missed problem.
 
-- **Urine vs stool** is told apart by litter used per visit (tray-weight drop
-  across the following clean): a pee clumps a lot of litter, a stool little.
-  The gram threshold (`URINE_LITTER_MIN`) is provisional; raw grams are logged
-  so it can be calibrated from real visits.
-- **Acute** (same day, no baseline): one cat urinating unusually often raises
-  an alert immediately -- the urinary-blockage catch, which for a male cat
-  (Isma) is an emergency.
-- **Trend** (daily): each cat's visits, urinations and weight are compared to
-  its own rolling baseline; a weight drop, a day with no visit, or a urination
+It tracks per-cat **litter-box visit frequency** and **weight** -- both
+measured reliably. (Telling urine from stool by litter used was tried and
+abandoned; see `docs/FINDINGS.md`.)
+
+- **Acute** (same day, no baseline): a cat making an unusually high number of
+  visits in a day raises an alert immediately -- the urinary-blockage catch,
+  which for a male cat (Isma) is an emergency. Threshold `ACUTE_VISITS`.
+- **Trend** (daily): each cat's daily visits and weight are compared to its own
+  rolling baseline; a weight drop, a day with no visit, or a visit-frequency
   spike raises an alert.
 - Surfaced on `32/3/20` (Health alert, bool) and `32/3/21` (Health note, short
   text), plus the LM log and an LM alert. History accrues in LM storage
   (`pawbby_daily`).
 - **Weekly report** (Monday, after 08:00): an email with a per-cat summary of
-  the last 7 days -- weight and trend, visits/urinations/stools per day, days
-  used, and any concerns. Schedule is `WEEKLY_DAY`/`WEEKLY_HOUR` in the config.
+  the last 7 days -- weight and trend, visits per day, days used, and any
+  concerns. Schedule is `WEEKLY_DAY`/`WEEKLY_HOUR` in the config.
 
 Not a substitute for a vet; thresholds are in the config block of the resident
 script and will want tuning against real data.

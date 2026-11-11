@@ -72,6 +72,19 @@ local ALERT_EMAIL     = MAIL.to or ''     -- recipient
 local GMAIL_USER      = MAIL.user or ''   -- gmail address (SMTP login + From)
 local GMAIL_APP_PASS  = MAIL.pass or ''   -- a Google App Password
 local ALERT_EMAIL_MIN = 300               -- min seconds between emails (anti-storm)
+
+-- Fast alerts (phase 3). Thresholds checked against 30 Sep - 11 Nov 2026:
+-- at most 3 counted visits in 2 h (Charlie), gaps between counted visits
+-- up to 54 h (Charlie) and 40 h (Isma).
+local FREQ_WINDOW   = 7200    -- s
+local FREQ_VISITS   = 4       -- counted visits by one cat within FREQ_WINDOW -> urgent
+local GAP_MIN_H     = 18      -- no-visit alert never earlier than this
+local GAP_FACTOR    = 1.25    -- ... and not before 1.25 x the cat's own 95th percentile gap
+local STUCK_S       = 600     -- box in a busy or lid state this long -> watch
+local STUCK_CAT_S   = 1800    -- a cat state this long -> watch
+local OFFLINE_S     = 900     -- box offline this long -> watch
+local ALERT_REPEAT_S = 6 * 3600  -- the same alert at most every 6 h
+local VISITLOG_MAX  = 600     -- visit records kept in storage (~2 months)
 local WEEKLY_DAY  = 1    -- weekday to email the weekly report (0=Sun..6=Sat); 1=Mon
 local WEEKLY_HOUR = 8    -- send after this hour, local time
 
@@ -108,6 +121,11 @@ local GA = {
   device     = '32/3/28',  -- DP 108 device info, decoded text    (255  text)
   connects   = '32/3/29',  -- connections made today (1 = no drop) (7  uint16)
   tare       = '32/3/30',  -- command: zero the scale, EMPTY drum only (1 bool)
+  -- alerts for the app (phase 3): the app notifies when alertno changes
+  alerttext  = '32/3/31',  -- last alert text                    (255  text)
+  alertno    = '32/3/32',  -- alert number, +1 per alert          (7    uint16)
+  alertlevel = '32/3/33',  -- 1 info, 2 watch, 3 urgent           (5    uint8)
+  testalert  = '32/3/34',  -- command: send a test alert          (1    bool)
 }
 
 local CAT_KG     = { GA.cat1kg, GA.cat2kg }
@@ -143,7 +161,38 @@ local OBJECTS = {
   { ga = GA.device,    dt = 255, name = 'Pawbby Device Info (DP108)' },
   { ga = GA.connects,  dt = 7,  name = 'Pawbby Connections Today' },
   { ga = GA.tare,      dt = 1,  name = 'Pawbby Tare (empty drum only)' },
+  { ga = GA.alerttext,  dt = 255, name = 'Pawbby Alert Text', init = 'None' },
+  { ga = GA.alertno,    dt = 7,   name = 'Pawbby Alert Number' },
+  { ga = GA.alertlevel, dt = 5,   name = 'Pawbby Alert Level' },
+  { ga = GA.testalert,  dt = 1,   name = 'Pawbby Test Alert' },
 }
+
+--[[ One block of objects per cat (phase 3): 32/5/x Isma, 32/6/x Charlie.
+     The older 32/3/16-19 stay as they are for Mosaic. ]]
+local CATGA = {}
+for i, name in ipairs(CAT_NAMES) do
+  local m = '32/' .. (4 + i) .. '/'
+  local c = {
+    last = m .. '1', since = m .. '2', secs = m .. '3', w = m .. '4', w7 = m .. '5',
+    wchg = m .. '6', visits = m .. '7', vday = m .. '8', health = m .. '9', level = m .. '10',
+  }
+  CATGA[name] = c
+  local P = 'Pawbby ' .. name .. ' '
+  for _, o in ipairs({
+    { c.last,   16, 'Last Visit', nil, '-' },
+    { c.since,  7,  'Minutes Since Visit', 'min' },
+    { c.secs,   7,  'Last Visit Seconds', 's' },
+    { c.w,      9,  'Last Weight', 'g' },
+    { c.w7,     9,  'Weight 7d Median', 'g' },
+    { c.wchg,   9,  'Weight Change 7d vs 30d', '%' },
+    { c.visits, 5,  'Visits Today' },
+    { c.vday,   9,  'Visits per Day 14d' },
+    { c.health, 16, 'Health', nil, 'OK' },
+    { c.level,  5,  'Health Level' },
+  }) do
+    OBJECTS[#OBJECTS + 1] = { ga = o[1], dt = o[2], name = P .. o[3], units = o[4], init = o[5] }
+  end
+end
 
 --[[ Create any object that does not exist yet; runs on script start. A new
      object has no value at all until something writes it (the object list
@@ -356,6 +405,35 @@ local function queue_email(subject, body)
   storage.set('pawbby_email', q)
 end
 
+--[[ One alert, for the app, the LM and email. The app notifies when
+     32/3/32 (alert number) changes, so that is written last. key = an alert
+     that may repeat (e.g. 'gap:Isma'); it is sent at most every
+     ALERT_REPEAT_S. Level 1 (info, e.g. the test) goes to the app only. ]]
+local LEVELTXT = { 'Info', 'Watch', 'Urgent' }
+local function raisealert(level, key, text)
+  local t = os.time()
+  if key then
+    local keys = storage.get('pawbby_alertkeys')
+    if type(keys) ~= 'table' then keys = {} end
+    if keys[key] and t - keys[key] < ALERT_REPEAT_S then return false end
+    for k, v in pairs(keys) do if t - v > 86400 then keys[k] = nil end end
+    keys[key] = t
+    storage.set('pawbby_alertkeys', keys)
+  end
+  local n = (tonumber((storage.get('pawbby_alertno'))) or 0) + 1
+  storage.set('pawbby_alertno', n)
+  grp.write(GA.alerttext, text:sub(1, 250))
+  grp.write(GA.alertlevel, level)
+  grp.write(GA.alertno, n)
+  log('pawbby: ALERT #' .. n .. ' [' .. LEVELTXT[level] .. '] ' .. text)
+  if level >= 2 then
+    alert('PAWBBY ' .. LEVELTXT[level] .. ': ' .. text)
+    queue_email('PAWBBY ' .. LEVELTXT[level] .. ': ' .. text:sub(1, 60),
+      text .. '\n\nAutomated message from the litter box, not a diagnosis.')
+  end
+  return true
+end
+
 --[[ Send one email straight to Gmail's SMTP over implicit SSL (port 465) with
      an App Password. This firmware has no mailer UI, so mail() has nothing to
      relay through and we do it ourselves. Blocking, so the caller runs it
@@ -444,6 +522,14 @@ local function healthcheck(daily, quiet)
       end
     end
   end
+  -- per cat, for the cat health objects
+  local per = {}
+  for _, name in ipairs(CAT_NAMES) do
+    for _, txt in ipairs(issues) do
+      if txt:sub(1, #name) == name then per[name] = per[name] or txt end
+    end
+  end
+  storage.set('pawbby_catissues', per)
   if #issues > 0 and quiet then
     local full = table.concat(issues, '; ')
     put(GA.healthbad, true)
@@ -454,11 +540,8 @@ local function healthcheck(daily, quiet)
     put(GA.healthbad, true)
     put(GA.healthmsg, full:sub(1, 14))
     log('pawbby: HEALTH ' .. full)
-    alert('PAWBBY health: ' .. full .. ' -- check the cat(s) with a vet')
-    queue_email('PAWBBY health alert',
-      'The litter box flagged a change: ' .. full .. '.\n\nThis is an early '
-      .. 'warning from the box, not a diagnosis. Please check the cat(s) and '
-      .. 'consider a vet.')
+    raisealert(2, 'daily:' .. os.date('%Y-%m-%d'), 'Daily check: ' .. full
+      .. '. An early warning from the box, not a diagnosis: check the cat(s) and consider a vet.')
   else
     put(GA.healthbad, false)
     put(GA.healthmsg, 'OK')
@@ -478,7 +561,7 @@ local function healthrollup(day)
     rec[name] = { v = cv[name] or 0, w = median(dw[name] or {}) or 0 }
   end
   daily[#daily + 1] = rec
-  while #daily > 30 do table.remove(daily, 1) end
+  while #daily > 400 do table.remove(daily, 1) end
   storage.set('pawbby_daily', daily)
   healthcheck(daily)
 end
@@ -554,6 +637,160 @@ local BUSY_STATES = {
 }
 
 
+-------------------------------------------- cats and fast alerts (phase 3) ---
+
+local function sexof(name)
+  for i, n in ipairs(CAT_NAMES) do if n == name then return CAT_SEX[i] end end
+end
+
+-- per-cat state kept across restarts: { [name] = { last = t, secs = s, w = g } }
+local function catstate()
+  local cs = storage.get('pawbby_cats')
+  if type(cs) ~= 'table' then cs = {} end
+  return cs
+end
+
+--[[ How long a cat may go without a counted visit before it is worth a look:
+     1.25 x its own 95th percentile gap over the last 30 days, never under
+     GAP_MIN_H. Charlie often goes 24 h between counted visits, Isma rarely
+     15 h, so one fixed number would be wrong for one of them. ]]
+local function gapthreshold(name)
+  local samples = storage.get('pawbby_samples')
+  local ts = {}
+  if type(samples) == 'table' then
+    local since = os.time() - 30 * 86400
+    for _, x in ipairs(samples) do
+      if x.src == '107' and x.who == name and x.t >= since then ts[#ts + 1] = x.t end
+    end
+  end
+  table.sort(ts)
+  local gaps = {}
+  for i = 2, #ts do gaps[#gaps + 1] = ts[i] - ts[i - 1] end
+  table.sort(gaps)
+  local p95 = #gaps >= 10 and gaps[math.max(1, math.floor(#gaps * 0.95))] or 0
+  return math.max(GAP_MIN_H * 3600, GAP_FACTOR * p95)
+end
+
+-- weight over 7 days, its change against 30 days, visits per day over 14 days
+local function catstats()
+  local daily = storage.get('pawbby_daily')
+  if type(daily) ~= 'table' then return end
+  for _, name in ipairs(CAT_NAMES) do
+    local w7, w30, v14 = {}, {}, {}
+    for k = #daily, 1, -1 do
+      local c, age = daily[k][name], #daily - k
+      if c then
+        if c.w and c.w > 0 then
+          if age < 7 then w7[#w7 + 1] = c.w end
+          if age < 30 then w30[#w30 + 1] = c.w end
+        end
+        if age < 14 then v14[#v14 + 1] = c.v or 0 end
+      end
+    end
+    local g = CATGA[name]
+    local m7, m30, mv = median(w7), median(w30), median(v14)
+    if m7 then put(g.w7, m7) end
+    if m7 and m30 and m30 > 0 then put(g.wchg, math.floor((m7 / m30 - 1) * 1000 + 0.5) / 10) end
+    if mv then put(g.vday, mv) end
+  end
+end
+
+-- a counted, named visit: per-cat objects, then the frequent-trips check
+local function catvisit(who, w, secs, nvisits)
+  local t = os.time()
+  local cs = catstate()
+  cs[who] = { last = t, secs = secs, w = w, seen = t }
+  storage.set('pawbby_cats', cs)
+  local g = CATGA[who]
+  grp.write(g.last, os.date('%a %H:%M', t))
+  put(g.since, 0)
+  if secs then grp.write(g.secs, secs) end
+  grp.write(g.w, w)
+  put(g.visits, nvisits or 0)
+  local samples, n = storage.get('pawbby_samples'), 0
+  if type(samples) == 'table' then
+    for _, x in ipairs(samples) do
+      if x.src == '107' and x.who == who and t - x.t <= FREQ_WINDOW then n = n + 1 end
+    end
+  end
+  if n >= FREQ_VISITS then
+    pawbby.freq[who] = t
+    raisealert(3, 'freq:' .. who, who .. ' used the litter box ' .. n
+      .. ' times in the last 2 hours. Frequent trips can mean a urinary problem'
+      .. (sexof(who) == 'male' and '; in a male cat a blockage is an emergency' or '')
+      .. '. Check ' .. who .. ' now.')
+  end
+end
+
+-- per-cat health objects: the worst of the daily check, a long gap, frequent trips
+local function cathealth(t)
+  local per = storage.get('pawbby_catissues')
+  if type(per) ~= 'table' then per = {} end
+  local cs = catstate()
+  local today = os.date('%Y-%m-%d', t)
+  for _, name in ipairs(CAT_NAMES) do
+    local level, text = 0, 'OK'
+    if per[name] then level, text = 1, per[name]:gsub('^' .. name .. ' ', '') end
+    local c = cs[name]
+    local last = c and math.max(c.last or 0, c.seen or 0)
+    if last and last > 0 and t - last > (pawbby.gapthr[name] or math.huge) then
+      level, text = 1, 'No visit ' .. math.floor((t - last) / 3600) .. ' h'
+    end
+    if pawbby.acute[name] == today then level, text = 2, 'Many visits' end
+    if pawbby.freq[name] and t - pawbby.freq[name] < FREQ_WINDOW then
+      level, text = 2, 'Many visits 2h'
+    end
+    put(CATGA[name].level, level)
+    put(CATGA[name].health, text:sub(1, 14))
+  end
+end
+
+-- once a minute, connected or not
+local function minutetick(t)
+  local cs = catstate()
+  for _, name in ipairs(CAT_NAMES) do
+    local c = cs[name]
+    if c and c.last then
+      put(CATGA[name].since, math.min(math.floor((t - c.last) / 60), 65535))
+      local thr, last = pawbby.gapthr[name], math.max(c.last, c.seen or 0)
+      if thr and t - last > thr then
+        raisealert(2, 'gap:' .. name, name .. ' has not used the litter box for '
+          .. math.floor((t - last) / 3600) .. ' hours (alert limit '
+          .. math.floor(thr / 3600 + 0.5) .. ' h, from ' .. name .. "'s own last 30 days).")
+      end
+    end
+  end
+  local st, since = pawbby.last['116'], pawbby.statesince
+  if st and since then
+    local lim = (CAT_STATES[st] and STUCK_CAT_S)
+             or ((BUSY_STATES[st] or LID_STATES[st]) and STUCK_S)
+    if lim and t - since > lim then
+      raisealert(2, 'stuck:' .. st, 'The litter box has been in state ' .. st .. ' for '
+        .. math.floor((t - since) / 60) .. ' minutes. Check that it is not jammed.')
+    end
+  end
+  if pawbby.offsince and t - pawbby.offsince > OFFLINE_S then
+    raisealert(2, 'offline', 'The litter box has been offline for '
+      .. math.floor((t - pawbby.offsince) / 60) .. ' minutes.')
+  end
+  cathealth(t)
+end
+
+--[[ One record per visit window, counted by the box or not: the base for
+     statistics, the pee/poo work (phase 4) and later the camera link.
+       t0, t1  window start (cat seen) and cat gone     cat   name (counted)
+       w, s    box weighing and seconds (DP 107)         peak  scale delta, g
+       dep     tray weight after leaving minus before entry, g (deposit, noisy)
+       est     cat guessed from the peak, uncounted visits only
+       clean, wclean  the clean that followed: seconds, tray weight after ]]
+local function logvisit(rec)
+  local vl = storage.get('pawbby_visitlog')
+  if type(vl) ~= 'table' then vl = {} end
+  vl[#vl + 1] = rec
+  while #vl > VISITLOG_MAX do table.remove(vl, 1) end
+  storage.set('pawbby_visitlog', vl)
+end
+
 --[[ How long a visit stays open after the box reports the cat gone. Two
      reasons, both from the 2026-09-17 09:27 visit that measured 0 g:
        - the box went cat_enter -> cat_near_leave -> cat_near -> cat_leave
@@ -590,7 +827,29 @@ local function finishvisit()
   else
     log('pawbby: visit ignored, delta ' .. d .. ' g')
   end
+  local rec = {
+    t0 = pawbby.vstart, t1 = pawbby.vend, cat = pawbby.visitwho,
+    w = pawbby.visit107w, s = pawbby.visitsecs, peak = d,
+    dep = (pawbby.w and pawbby.wbase) and math.floor(pawbby.w - pawbby.wbase + 0.5) or nil,
+    lid = pawbby.lidseen or nil,
+  }
+  if not rec.w and not pawbby.lidseen and d >= 800 then
+    local idx = identify(d, (learncats(storage.get('pawbby_samples') or {})))
+    rec.est = idx and CAT_NAMES[idx] or nil
+    --[[ The box did not count it, but the scale says which cat was in: that
+         is still a sign of life for the no-visit alert (Charlie often goes
+         24 h between counted visits). Display stays on counted visits. ]]
+    if rec.est then
+      local cs = catstate()
+      if cs[rec.est] then
+        cs[rec.est].seen = rec.t1 or os.time()
+        storage.set('pawbby_cats', cs)
+      end
+    end
+  end
+  logvisit(rec)
   pawbby.visit107, pawbby.visit107w = nil, nil
+  pawbby.visitwho, pawbby.visitsecs = nil, nil
 end
 
 --[[ One-off (2026-11-11): the daily history used to hold each cat's LAST
@@ -660,7 +919,38 @@ if not pawbby then
     -- the LM's SD card failed once already)
     dps = (type(storage.get('pawbby_dps')) == 'table' and storage.get('pawbby_dps')) or {},
     nextdps = 0,
+    freq = {}, acute = {}, gapthr = {},   -- fast alert state (phase 3)
   }
+  -- per-cat state: seed from the stored samples the first time
+  local cs = catstate()
+  local samples = storage.get('pawbby_samples')
+  if type(samples) == 'table' then
+    for _, x in ipairs(samples) do
+      if x.src == '107' and CATGA[x.who or ''] and (not cs[x.who] or cs[x.who].last <= x.t) then
+        -- samples before phase 2 have no s: read it from the stored DP 107
+        local secs = x.s or (x.p107 and select(2, weight107(x.p107)))
+        cs[x.who] = { last = x.t, secs = secs, w = x.w, seen = cs[x.who] and cs[x.who].seen }
+      end
+    end
+    storage.set('pawbby_cats', cs)
+  end
+  for _, name in ipairs(CAT_NAMES) do
+    pawbby.gapthr[name] = gapthreshold(name)
+    local c = cs[name]
+    if c then
+      put(CATGA[name].last, os.date('%a %H:%M', c.last))
+      if c.secs then put(CATGA[name].secs, c.secs) end
+      if c.w then put(CATGA[name].w, c.w) end
+    end
+  end
+  local cv = storage.get('pawbby_catvisits')
+  for _, name in ipairs(CAT_NAMES) do
+    put(CATGA[name].visits, (type(cv) == 'table' and cv[name]) or 0)
+  end
+  catstats()
+  log('pawbby: no-visit alert after ' .. math.floor(pawbby.gapthr[CAT_NAMES[1]] / 3600 + 0.5) .. ' h ('
+      .. CAT_NAMES[1] .. ') / ' .. math.floor(pawbby.gapthr[CAT_NAMES[2]] / 3600 + 0.5) .. ' h ('
+      .. CAT_NAMES[2] .. ')')
   -- earlier versions parked harmless trace DPs (102, 108, ...) in the Fault
   -- object. Clear any such leftover, and an empty string (Mosaic shows '' as
   -- no value).
@@ -735,6 +1025,11 @@ if prevday ~= today then
   grp.write(GA.cleans, 0)
   grp.write(GA.connects, 0)
   for _, ga in ipairs(CAT_VISITS) do grp.write(ga, 0) end
+  for _, name in ipairs(CAT_NAMES) do
+    grp.write(CATGA[name].visits, 0)
+    pawbby.gapthr[name] = gapthreshold(name)
+  end
+  catstats()
   log('pawbby: new day ' .. today .. ', visit counters reset')
 end
 
@@ -766,12 +1061,18 @@ if ALERT_EMAIL ~= '' and GMAIL_USER ~= '' and GMAIL_APP_PASS ~= '' then
   end
 end
 
+if now >= (pawbby.nexttick or 0) then
+  pawbby.nexttick = now + 60
+  minutetick(now)
+end
+
 local dev = pawbby.dev
 
 ----------------------------------------------------------------- connect ----
 
 if not dev:connected() then
   put(GA.online, false)
+  pawbby.offsince = pawbby.offsince or now
   if now >= pawbby.nextretry then
     local okc, err = dev:connect(5)
     if okc then
@@ -779,6 +1080,7 @@ if not dev:connected() then
       storage.set('pawbby_connects', n)
       put(GA.connects, n)
       log('pawbby: connected, session key established (connection ' .. n .. ' today)')
+      pawbby.offsince = nil
       pawbby.last = {}
       pawbby.nextbeat = now + 10
       pawbby.nextquery = 0
@@ -885,6 +1187,10 @@ if takecmd(GA.tare) then
   end
 end
 
+if takecmd(GA.testalert) then
+  raisealert(1, nil, 'Test alert from the litter box, sent at ' .. os.date('%H:%M') .. '. Nothing is wrong.')
+end
+
 if takecmd(GA.empty) then
   dev:set({ ['106'] = CMDS.empty })
   log('pawbby: EMPTY (dump) requested via ' .. GA.empty)
@@ -971,6 +1277,11 @@ while socket.gettime() < deadline do
           if w then
             pawbby.visit107w = w
             local who = recordcat(w, s, secs)
+            pawbby.visitwho, pawbby.visitsecs = who ~= 'Unknown' and who or nil, secs
+            if who ~= 'Unknown' then
+              local cvc = storage.get('pawbby_catvisits')
+              catvisit(who, w, secs, type(cvc) == 'table' and cvc[who] or 0)
+            end
             --[[ Acute: an unusually busy day of litter-box visits can mean a
                  urinary problem or blockage (more so in a male cat). Alert
                  once, when the per-cat daily count first crosses ACUTE_VISITS;
@@ -981,12 +1292,10 @@ while socket.gettime() < deadline do
               if nvis == ACUTE_VISITS then
                 put(GA.healthbad, true)
                 put(GA.healthmsg, (who .. ' ' .. nvis .. ' visits'):sub(1, 14))
-                alert('PAWBBY health: ' .. who .. ' used the box ' .. nvis
-                      .. 'x today, possible urinary problem -- check with a vet')
-                queue_email('PAWBBY: ' .. who .. ' at the box a lot',
-                  who .. ' used the litter box ' .. nvis .. ' times today. Frequent'
-                  .. ' trips can mean a urinary problem' .. (who == CAT_NAMES[1]
-                     and ', and in a male cat a blockage is an emergency' or '')
+                pawbby.acute[who] = os.date('%Y-%m-%d')
+                raisealert(3, 'acute:' .. who, who .. ' used the litter box ' .. nvis
+                  .. ' times today. Frequent trips can mean a urinary problem'
+                  .. (sexof(who) == 'male' and ', and in a male cat a blockage is an emergency' or '')
                   .. '. Please check ' .. who .. ' and consider a vet.')
               end
             end
@@ -1009,6 +1318,7 @@ while socket.gettime() < deadline do
           end
 
         elseif key == '116' then
+          pawbby.statesince = now
           put(GA.state, STATE_TEXT[s] or s)
           put(GA.cat, CAT_STATES[s] or false)
           put(GA.cleaning, BUSY_STATES[s] or false)
@@ -1032,6 +1342,13 @@ while socket.gettime() < deadline do
             put(GA.cleans, n)
             grp.write(GA.cleansecs, secs)
             log('pawbby: clean #' .. n .. ' today took ' .. secs .. ' s')
+            -- attach to the visit it followed (within 15 min)
+            local vl = storage.get('pawbby_visitlog')
+            local last = type(vl) == 'table' and vl[#vl]
+            if last and last.t1 and now - secs - last.t1 < 900 and not last.clean then
+              last.clean, last.wclean = secs, pawbby.w
+              storage.set('pawbby_visitlog', vl)
+            end
           end
 
           -- litter level, reported as a state pair
@@ -1053,12 +1370,15 @@ while socket.gettime() < deadline do
               log('pawbby: cat back within ' .. VISIT_SETTLE .. ' s, same visit')
             else
               pawbby.lidseen = false
+              pawbby.vstart, pawbby.vend = now, nil
               pawbby.visit107, pawbby.visit107w = nil, nil
+              pawbby.visitwho, pawbby.visitsecs = nil, nil
               pawbby.wbase = pawbby.w or 0
               pawbby.wmax  = pawbby.w or 0
             end
           elseif not present and pawbby.inbox then
             pawbby.inbox = false
+            pawbby.vend = now
             pawbby.settle = now + VISIT_SETTLE
           end
 

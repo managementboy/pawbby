@@ -59,6 +59,43 @@ Open: fault-code DP unidentified. See `docs/FINDINGS.md`.
 | 32/3/28 | Device info, DP 108 |
 | 32/3/29 | Connections made today (1 = no drop) |
 | 32/3/30 | Command: tare, refused unless idle and the scale reads under 500 g |
+| 32/3/31 | Alert text (the app notifies) |
+| 32/3/32 | Alert number, +1 per alert, written last |
+| 32/3/33 | Alert level: 1 info, 2 watch, 3 urgent |
+| 32/3/34 | Command: test alert (info, app only) |
+
+### Per cat: 32/5/x Isma, 32/6/x Charlie
+
+| Sub | Object |
+|---|---|
+| 1 | Last visit (text, "Wed 04:24") |
+| 2 | Minutes since the last counted visit |
+| 3 | Last visit, seconds in the box |
+| 4 | Last weight (g) |
+| 5 | Weight, 7-day median of daily medians (g) |
+| 6 | Weight change, 7 days against 30 days (%) |
+| 7 | Visits today |
+| 8 | Visits per day, 14-day median |
+| 9 | Health text (OK, "No visit 20 h", "Many visits 2h", "wt -6%") |
+| 10 | Health level: 0 OK, 1 watch, 2 urgent |
+
+## Records and fast alerts (phase 3)
+
+Every visit window becomes one record in storage `pawbby_visitlog` (newest
+600): start, end, cat (counted visits), box weighing and seconds, scale peak,
+deposit (tray weight after minus before), lid, an estimated cat for visits the
+box did not count, and the clean that followed. Daily history keeps 400 days.
+
+Alerts go to `32/3/31-33` (the app), the LM alert list and email (watch and
+urgent only), each kind at most every 6 h:
+
+- **Urgent:** one cat with 4 counted visits within 2 h; 8 visits in a day.
+- **Watch:** no visit for longer than 1.25 x the cat's own 95th-percentile gap
+  over 30 days, never under 18 h (on 11 Nov: Isma 18 h, Charlie 27 h); an
+  uncounted visit whose weight matches the cat also counts as a sign of life.
+  Box in a busy or lid state for 10 min, or a cat state for 30 min. Box offline
+  for 15 min. The daily trend check (weight, no visit, visit spike).
+
 
 Command objects are momentary: write true, the script sends the command and
 resets the object. Clean now is refused (and logged) unless the box is idle

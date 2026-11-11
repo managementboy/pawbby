@@ -270,8 +270,11 @@ check((store.pawbby_catvisits or {}).Isma == 8,
   'Isma visits counted (' .. tostring((store.pawbby_catvisits or {}).Isma) .. ')')
 check(objects['32/3/20'] == true, 'acute visit frequency raises health alert')
 check(objects['32/3/21'] == 'Isma 8 visits', 'acute note set on the KNX object')
-check(table.concat(alerts, ' '):find('used the box 8x today', 1, true) ~= nil,
+check(table.concat(alerts, ' '):find('used the litter box 8 times today', 1, true) ~= nil,
   'acute raises an LM alert')
+check(table.concat(alerts, ' '):find('4 times in the last 2 hours', 1, true) ~= nil,
+  'frequent trips (4 in 2 h) raise an urgent alert before the daily count does')
+check(objects['32/3/33'] == 3 and objects['32/5/10'] == 2, 'urgent alert level and Isma health level 2')
 local emailed = false
 for _, m in ipairs(mails) do if m.b:find('used the litter box 8', 1, true) then emailed = true end end
 check(emailed, 'acute sends an email')
@@ -428,5 +431,72 @@ clock = clock + 86400
 run({ idle })
 check(objects['32/3/23'] == 0 and objects['32/3/29'] == 0, 'cleans and connections reset at midnight')
 dump('diagnostics')
+
+---------------------------------- 12. phase 3: records, cats, alerts ----
+world()
+-- history: Isma and Charlie named, Isma's visits every ~8 h
+store.pawbby_samples = {}
+for k = 20, 1, -1 do
+  store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0 - k * 8 * 3600, w = 5300, src = '107', who = 'Isma', s = 30 }
+  store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0 - k * 8 * 3600 + 600, w = 4200, src = '107', who = 'Charlie', s = 20 }
+end
+store.pawbby_daily = {}
+for k = 10, 1, -1 do
+  store.pawbby_daily[#store.pawbby_daily + 1] = { d = 'd' .. k, Isma = { v = 3, w = 5300 }, Charlie = { v = 3, w = 4200 } }
+end
+store.pawbby_day = os.date('%Y-%m-%d', T0)
+store.pawbby_samples_v2 = true   -- as on the LM: the 2026-09 one-off reset is done
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+check(objects['32/5/4'] == 5300 and objects['32/6/4'] == 4200, 'per-cat last weight seeded from samples')
+check(objects['32/5/5'] == 5300 and objects['32/5/6'] == 0 and objects['32/5/8'] == 3, 'per-cat 7d weight, change, visits/day')
+check(logged('no-visit alert after 18 h (Isma)'), 'gap limit logged at start')
+-- a counted Isma visit followed by a clean: one record with the clean attached
+visit(5310)
+local cyc = { { { ['116'] = 'work_aclean' } } }
+for i = 1, 23 do cyc[#cyc + 1] = idle end
+cyc[#cyc + 1] = { { ['116'] = 'work_idle' } }
+run(cyc)
+local vl = store.pawbby_visitlog
+check(vl and #vl == 1, 'one visit record')
+local r = vl[1]
+check(r.cat == 'Isma' and r.w == 5310 and r.s == 11 and r.t0 and r.t1 and r.t1 > r.t0, 'record holds cat, weight, seconds, times')
+check(r.dep == 0 and r.peak == 5310, 'deposit and peak recorded')
+check(r.clean == 120, 'the following clean is attached (got ' .. tostring(r.clean) .. ')')
+check(objects['32/5/3'] == 11 and objects['32/5/2'] == 2 and objects['32/5/7'] == 1, 'Isma: seconds, minutes since (2 min of clean), visits today')
+-- a peek with weight but no DP 107: uncounted record with an estimated cat
+run({ { { ['116'] = 'cat_near' } }, { { ['112'] = 2342 + 4210 } }, { { ['112'] = 2342 } },
+      { { ['116'] = 'cat_near_leave' } }, idle, idle, idle, idle })
+check(#store.pawbby_visitlog == 2 and store.pawbby_visitlog[2].cat == nil and store.pawbby_visitlog[2].est == 'Charlie',
+  'uncounted visit recorded, cat estimated from the peak')
+check(store.pawbby_cats.Charlie.seen and store.pawbby_cats.Charlie.seen > store.pawbby_cats.Charlie.last,
+  'an uncounted visit by Charlie counts as a sign of life')
+-- test alert: app objects only
+objects['32/3/34'] = true
+local na = #alerts
+run({ idle })
+check(objects['32/3/32'] == 1 and objects['32/3/33'] == 1 and objects['32/3/31']:find('Test alert', 1, true), 'test alert on the app objects')
+check(#alerts == na and objects['32/3/34'] == false, 'test alert: no LM alert, button cleared')
+-- 20 h without Isma: watch alert, once
+for i = 1, 20 * 12 do clock = clock + 300; chunk() end
+check(logged('[Watch] Isma has not used the litter box'), 'no-visit alert for Isma')
+check(logged('[Watch] Charlie has not used the litter box') and objects['32/3/33'] == 2, 'and for Charlie, timed from her uncounted visit')
+check(objects['32/5/10'] == 1 and objects['32/5/9'] == 'No visit 20 h', 'Isma health shows the gap')
+local gaps = 0
+for _, l in ipairs(logs) do if l:find('ALERT', 1, true) and l:find('Isma has not used', 1, true) then gaps = gaps + 1 end end
+check(gaps <= 2, 'the gap alert repeats at most every 6 h (got ' .. gaps .. ')')
+-- box stuck with the lid open for 11 minutes
+run({ { { ['116'] = 'lid_open' } } })
+for i = 1, 11 * 12 do clock = clock + 5; chunk() end
+check(logged('has been in state lid_open'), 'stuck alert')
+dump('phase 3')
+
+-------------------------------------------------- 13. box offline -------
+world()
+dev.connected = function() return false end
+dev.connect = function() return nil, 'connect: Network unreachable' end
+dev.close = function() end
+for i = 1, 20 * 12 do run({ idle }) end
+check(logged('has been offline for'), 'offline alert after 15 min')
+dev.connected = function() return true end
 
 print('ALL CHECKS PASSED')

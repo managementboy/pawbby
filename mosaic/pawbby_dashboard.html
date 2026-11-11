@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pawbby Dashboard</title>
+<!--
+  Pawbby per-cat dashboard — a custom HTML widget for Mosaic 3.0 (app "mosaic30").
+
+  DATA SEAM
+  ---------
+  Everything the widget shows comes from readObjects() below. Right now it
+  returns a static snapshot of the REAL live values pulled from the LM on
+  2026-11-09 (Isma/Charlie learned bands, email on, litter OK) so the layout
+  can be judged standalone.
+
+  To make it live inside Mosaic, replace the body of readObjects() with reads
+  of the 32/3/* group objects. Mosaic/LM visualisation exposes object values to
+  embedded pages; the exact call (grp.getvalue / a /scada websocket / an
+  /object HTTP poll) is confirmed when we place it. The rest of the widget does
+  not change: it only consumes the object below.
+-->
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --card: #ffffff;
+    --ink: #1a2230;
+    --muted: #5b6b7f;
+    --line: #e2e8f0;
+    --accent: #2f6df6;
+    --ok: #1a9d5a;
+    --warn: #e0a106;
+    --bad: #d6453d;
+    --isma: #3b6fd4;
+    --charlie: #c0609a;
+    --shadow: 0 1px 2px rgba(16,32,64,.06), 0 6px 16px rgba(16,32,64,.06);
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --bg: #0f141b; --card: #171f2a; --ink: #e8edf4; --muted: #9aa8ba;
+      --line: #263141; --accent: #5b8cff; --ok: #39c178; --warn: #f0bb3a;
+      --bad: #ff6a60; --isma: #6c9bff; --charlie: #e487bd;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 20px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f141b; --card: #171f2a; --ink: #e8edf4; --muted: #9aa8ba;
+    --line: #263141; --accent: #5b8cff; --ok: #39c178; --warn: #f0bb3a;
+    --bad: #ff6a60; --isma: #6c9bff; --charlie: #e487bd;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 20px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 16px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  .status-pill {
+    font-size: 12.5px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+  }
+  .status-pill b { color: var(--ink); font-weight: 700; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px 15px; box-shadow: var(--shadow);
+  }
+  .cat { position: relative; overflow: hidden; }
+  .cat::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    background: var(--c);
+  }
+  .cat-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--c); flex: none; }
+  .cat-name { font-size: 16px; font-weight: 700; }
+  .sex { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .big { display: flex; align-items: baseline; gap: 14px; margin: 6px 0 10px; }
+  .metric .n { font-size: 26px; font-weight: 750; line-height: 1; }
+  .metric .l { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .delta { font-size: 12px; font-weight: 600; }
+  .delta.up { color: var(--ok); } .delta.down { color: var(--bad); }
+  .row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+  .row span:first-child { color: var(--muted); }
+  .wide { grid-column: 1 / -1; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  @media (max-width: 560px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { text-align: center; padding: 10px 6px; border: 1px solid var(--line); border-radius: 11px; }
+  .tile .n { font-size: 19px; font-weight: 700; }
+  .tile .l { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 700; }
+  .b-ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .b-warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .b-bad { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+  .health { display: flex; align-items: center; gap: 10px; }
+  .health .msg { font-size: 13.5px; }
+  footer { margin-top: 12px; font-size: 11.5px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🐾 Litter Box</h1>
+    <span class="status-pill" id="box-status">● <b>Idle</b> · online</span>
+  </header>
+
+  <div class="grid" id="cats"></div>
+
+  <div class="card wide" style="margin-top:12px">
+    <div class="tiles">
+      <div class="tile"><div class="n" id="t-visits">—</div><div class="l">Visits today</div></div>
+      <div class="tile"><div class="n" id="t-litter">—</div><div class="l">Litter</div></div>
+      <div class="tile"><div class="n" id="t-deodorant">—</div><div class="l">Deodorant</div></div>
+      <div class="tile"><div class="n" id="t-last">—</div><div class="l">Last visit</div></div>
+    </div>
+  </div>
+
+  <div class="card wide" style="margin-top:12px">
+    <div class="health">
+      <span class="badge" id="h-badge">—</span>
+      <span class="msg" id="h-msg">—</span>
+    </div>
+  </div>
+
+  <footer id="foot">Pawbby · LogicMachine · local only</footer>
+</div>
+
+<script>
+// ----- DATA SEAM: swap for live 32/3/* object reads inside Mosaic -----------
+function readObjects() {
+  // Real snapshot pulled from the LM 2026-11-09 (bands 5011/4435 g, email on).
+  return {
+    box:      { state: "Idle", online: true, visitsToday: 6 },
+    litter:   { low: false },                 // 32/3/13
+    deodorant:{ days: 18 },                    // DP 115 (not yet an object)
+    lastVisit:{ who: "Charlie", minsAgo: 34 },
+    health:   { alert: false, note: "OK" },    // 32/3/20, 32/3/21
+    cats: [
+      { name: "Isma",    sex: "♂", color: "var(--isma)",
+        visits: 3, weightG: 5011, trendPct: +0.4, lastWeightG: 5020 },   // 32/3/18, 32/3/16
+      { name: "Charlie", sex: "♀", color: "var(--charlie)",
+        visits: 3, weightG: 4383, trendPct: -1.2, lastWeightG: 4435 },   // 32/3/19, 32/3/17
+    ],
+  };
+}
+// ---------------------------------------------------------------------------
+
+const kg = g => (g/1000).toFixed(2) + " kg";
+
+function render(d) {
+  const sp = document.getElementById("box-status");
+  sp.innerHTML = (d.box.online ? "● " : "○ ") + "<b>" + d.box.state + "</b> · " +
+    (d.box.online ? "online" : "offline");
+  sp.style.color = d.box.online ? "var(--ok)" : "var(--bad)";
+
+  document.getElementById("cats").innerHTML = d.cats.map(c => {
+    const up = c.trendPct >= 0;
+    return `<div class="card cat" style="--c:${c.color}">
+      <div class="cat-head"><span class="dot"></span>
+        <span class="cat-name">${c.name}</span><span class="sex">${c.sex}</span></div>
+      <div class="big">
+        <div class="metric"><div class="n">${c.visits}</div><div class="l">visits today</div></div>
+        <div class="metric"><div class="n">${kg(c.weightG)}</div><div class="l">weight</div></div>
+      </div>
+      <div class="row"><span>Trend vs baseline</span>
+        <span class="delta ${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(c.trendPct).toFixed(1)}%</span></div>
+      <div class="row"><span>Last weighed</span><span>${kg(c.lastWeightG)}</span></div>
+    </div>`;
+  }).join("");
+
+  document.getElementById("t-visits").textContent = d.box.visitsToday;
+  const lit = document.getElementById("t-litter");
+  lit.textContent = d.litter.low ? "LOW" : "OK";
+  lit.style.color = d.litter.low ? "var(--bad)" : "var(--ok)";
+  document.getElementById("t-deodorant").textContent = d.deodorant.days + "d";
+  document.getElementById("t-last").textContent = d.lastVisit.who + " · " + d.lastVisit.minsAgo + "m";
+
+  const hb = document.getElementById("h-badge"), hm = document.getElementById("h-msg");
+  if (d.health.alert) { hb.className = "badge b-bad"; hb.textContent = "CHECK"; hm.textContent = d.health.note; }
+  else { hb.className = "badge b-ok"; hb.textContent = "HEALTHY"; hm.textContent = "No concerns flagged — " + d.health.note; }
+
+  document.getElementById("foot").textContent =
+    "Pawbby · LogicMachine · local only · updated " +
+    new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+render(readObjects());
+// Inside Mosaic, re-render on a timer or object-change event:
+// setInterval(() => render(readObjects()), 5000);
+</script>
+</body>
+</html>

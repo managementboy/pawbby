@@ -56,7 +56,7 @@ shown in words on the Fault object with the manual's advice as the alert
 | 32/3/23 | Clean cycles today |
 | 32/3/24 | Last clean cycle, seconds |
 | 32/3/25 | Raw DP 115: name of the last setting changed (was read as deodorant) |
-| 32/3/26 | Motor / drum status, raw DP 114 |
+| 32/3/26 | Last DP 114 hardware check, short names for the long ones (`uninstall_err`, `weight_ok`, ...; see `SHORT114` in the script) |
 | 32/3/27 | Motor debug text, DP 117 |
 | 32/3/28 | Device info, DP 108 |
 | 32/3/29 | Connections made today (1 = no drop) |

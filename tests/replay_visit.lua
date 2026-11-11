@@ -611,4 +611,42 @@ run({ { { ['116'] = 'cat_litter_enough' } } })
 check(objects['32/3/36'] == false and objects['32/3/13'] == false, 'litter refilled')
 dump('faults and flags')
 
+----------------- 16. every Fault / DP 114 value fits DPT 16 (14 chars) ----
+-- all DP 114 values in the Tuya model (docs/tuya-data-model-2026-11-11.json)
+local DP114 = { 'door_pir_err', 'door_pir_ok', 'biology_err', 'biology_ok', 'collect_pir_err',
+  'collect_pir_ok', 'door_air_err', 'door_air_ok', 'flash_err', 'flash_ok', 'motor_err', 'motor_ok',
+  'sensor_weight_err', 'sensor_weight_ok', 'dump_err', 'dump_ok', 'block_err', 'block_ok',
+  'roller_overweight_err', 'roller_overweight_ok', 'deodorant_reset', 'roller_install_err',
+  'roller_install_ok', 'roller_uninstall_err', 'roller_uninstall_ok' }
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle', ['102'] = NOFAULT } } })
+local seen26, seen15 = {}, {}
+local function fits(ga, v, what)
+  check(type(v) == 'string' and #v <= 14, ga .. ' value "' .. tostring(v) .. '" for ' .. what .. ' is '
+    .. #tostring(v) .. ' characters')
+end
+for _, v in ipairs(DP114) do
+  run({ { { ['114'] = v } } })
+  local o = objects['32/3/26']
+  fits('32/3/26', o, v)
+  check(not seen26[o] or seen26[o] == v, '32/3/26 "' .. o .. '" used for both ' .. tostring(seen26[o]) .. ' and ' .. v)
+  seen26[o] = v
+  fits('32/3/15', objects['32/3/15'], v)
+  seen15[#seen15 + 1] = objects['32/3/15']
+  run({ { { ['102'] = NOFAULT } } })
+end
+-- every DP 102 byte, up to the 128-byte maximum of the model
+for o = 4, 127 do
+  local raw = { 1, 0, 0, 124 }
+  for i = 4, 127 do raw[#raw + 1] = (i == o) and 1 or 0 end
+  run({ { { ['102'] = b64enc(string.char(unpack(raw))) } } })
+  fits('32/3/15', objects['32/3/15'], 'DP 102 byte ' .. o)
+end
+check(objects['32/3/15'] == 'Fault byte 127', 'last byte named (got ' .. tostring(objects['32/3/15']) .. ')')
+run({ { { ['102'] = NOFAULT } } })
+-- an unknown DP and an unknown *_err land in the Fault object cut to 14
+run({ { { ['199'] = 'AQIDBAUGBwgJCgsM' } }, { { ['114'] = 'some_very_long_part_err' } } })
+fits('32/3/15', objects['32/3/15'], 'unknown _err')
+print('32/3/15 values: ' .. table.concat(seen15, ', '))
+
 print('ALL CHECKS PASSED')

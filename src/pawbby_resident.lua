@@ -116,7 +116,7 @@ local GA = {
   cleans     = '32/3/23',  -- clean cycles today                  (5    uint8)
   cleansecs  = '32/3/24',  -- last clean cycle, seconds           (7    uint16)
   deodorant  = '32/3/25',  -- DP 115 deodorant cartridge, raw     (16   string)
-  motor      = '32/3/26',  -- DP 114 motor / drum status, raw     (16   string)
+  motor      = '32/3/26',  -- DP 114 check result, SHORT114 names (16   string)
   motordbg   = '32/3/27',  -- DP 117 motor debug text             (255  text)
   device     = '32/3/28',  -- DP 108 device info, decoded text    (255  text)
   connects   = '32/3/29',  -- connections made today (1 = no drop) (7  uint16)
@@ -311,6 +311,17 @@ local FAULT114 = {
   door_air_err          = { 'Door sensor', partfailed('door sensor') },
   flash_err             = { 'Memory fault', partfailed('memory') },
   dump_err              = { 'Dump fault', partfailed('emptying mechanism') },
+}
+--[[ 32/3/26 is DPT 16 (14 characters). Seven DP 114 names are longer, and
+     cut to 14 four of them look like their _ok twin ("roller_uninsta"), so
+     they get short names. Every value of the Tuya enum fits after this. ]]
+local SHORT114 = {
+  collect_pir_err = 'bin_pir_err', collect_pir_ok = 'bin_pir_ok',
+  sensor_weight_err = 'weight_err', sensor_weight_ok = 'weight_ok',
+  roller_overweight_err = 'overweight_err', roller_overweight_ok = 'overweight_ok',
+  roller_install_err = 'install_err', roller_install_ok = 'install_ok',
+  roller_uninstall_err = 'uninstall_err', roller_uninstall_ok = 'uninstall_ok',
+  deodorant_reset = 'deodor_reset',
 }
 -- [3] = true: seen while someone services the box, so wait FAULT_S first
 local FAULT102 = { [12] = { 'Drum out', DRUM, true } }
@@ -1566,7 +1577,7 @@ while socket.gettime() < deadline do
           --[[ One check result per report: *_err, *_ok or deodorant_reset.
                Only *_err is a fault; the matching *_ok clears it (motor_ok
                does not clear a drum fault). ]]
-          put(GA.motor, s:sub(1, 14))
+          put(GA.motor, (SHORT114[s] or s):sub(1, 14))
           log('pawbby: dp 114 = ' .. s)
           local part = s:match('^(.+)_err$')
           if part then

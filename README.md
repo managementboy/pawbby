@@ -22,7 +22,7 @@ Open: fault-code DP unidentified. See `docs/FINDINGS.md`.
 ## Layout
 
     src/tuya34.lua            Tuya v3.4 client; install as LM user library "tuya34"
-    src/pawbby_resident.lua   Resident script, 5 s interval; LM script id 64
+    src/pawbby_resident.lua   Resident script, sleep 0 (1 s event loop); LM script id 64
     docs/                     DP map, protocol notes, findings
     tools/                    Deploy and log helpers
 
@@ -50,6 +50,15 @@ Open: fault-code DP unidentified. See `docs/FINDINGS.md`.
 | 32/3/19 | Charlie visits today |
 | 32/3/20 | Health alert (bool) |
 | 32/3/21 | Health note (short text) |
+| 32/3/22 | Last visit: seconds in the box (DP 107) |
+| 32/3/23 | Clean cycles today |
+| 32/3/24 | Last clean cycle, seconds |
+| 32/3/25 | Deodorant cartridge, raw DP 115 |
+| 32/3/26 | Motor / drum status, raw DP 114 |
+| 32/3/27 | Motor debug text, DP 117 |
+| 32/3/28 | Device info, DP 108 |
+| 32/3/29 | Connections made today (1 = no drop) |
+| 32/3/30 | Command: tare, refused unless idle and the scale reads under 500 g |
 
 Command objects are momentary: write true, the script sends the command and
 resets the object. Clean now is refused (and logged) unless the box is idle

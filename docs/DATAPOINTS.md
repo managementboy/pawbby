@@ -15,16 +15,16 @@ gwId/devId envelope. `DP_QUERY_NEW` (0x10) is ignored by this firmware.
 | 102 | raw | clean result, sent when a clean ends (auto and manual seen): `01 00 00 0b` + 11 zero bytes both times, so byte 3 is **not** a cycle counter. Logged, not alerted |
 | 103 | raw | composite status blob |
 | 106 | raw | command in |
-| 107 | raw | cat visit summary; fires only on a real visit, ~70 s before auto-clean; not part of query replies. Layout `01 00 00 05 WW WW 00 xx 00`, **WW WW = cat weight in grams** (working hypothesis, see below) |
+| 107 | raw | cat visit summary; fires only on a real visit, ~70 s before auto-clean; not part of query replies. Layout `01 00 00 05 WW WW 00 SS 00`, **WW WW = cat weight in grams**, **SS = visit length in seconds** (see below) |
 | 109 | raw | weight calibration / tare. **Write confirmed**, see below |
 | 110 | raw | calibration result |
 | 111 | int | raw weight ADC |
 | 112 | int | filtered weight, grams |
 | 113 | int | resets when the cat leaves |
-| 114 | enum | motor / drum status |
+| 114 | enum | motor / drum status; `motor_ok` when idle (2026-11-11) |
 | 115 | enum | deodorant cartridge life (`deodorant_days`) |
 | 116 | enum | state machine |
-| 117 | str | motor debug string `cu= FG= BRK= PWM= POWER=` |
+| 117 | str | motor debug string, e.g. idle `cu=0 FG=9345 BRK=1 PWM=0 POWER=1` (2026-11-11) |
 
 ## Confirmed write payloads
 
@@ -88,3 +88,23 @@ The last four rows are not in the Pawbby-Reborn notes: new findings.
 A liner jam produced no DP 116 change and no fault on any mapped DP, so the
 fault-code datapoint is still unidentified. Unknown DPs are logged and raised
 as an LM alert to catch it next time.
+
+## DP 107 byte 7: visit length in seconds (2026-11-11)
+
+On every visit the box also sends DP 113 three times as the cat leaves: `0`,
+then a small number, then the cat weight. The small number equals byte 7 of
+the DP 107 payload (0-based; `SS` above). Against the logged states it is the
+time from `cat_enter` to `cat_leave` minus 17-21 s:
+
+| Visit | cat_enter -> cat_leave | Byte 7 |
+|---|---|---|
+| 9 Nov 15:36 Charlie | 37 s | 16 |
+| 10 Nov 20:06 Charlie | 32 s | 15 |
+| 10 Nov 21:11 Isma | 84 s | 64 |
+| 11 Nov 04:22 Isma | 131 s | 112 |
+| 11 Nov 04:36 Charlie | 31 s | 12 |
+
+So it is the box's own count of seconds the cat spent in the box (probably
+from when its weight settled). Published on `32/3/22` and stored with each
+sample (`s`). Over the 204 stored visits it ranges 10-137 s, median 34-37 s.
+This is the main input for telling pee from poo (plan phase 4).

@@ -24,7 +24,7 @@ is no Pi, no broker, no vendor cloud in the path.
 ## Layout
 
     src/tuya34.lua            Tuya v3.4 client (user library on the LM)
-    src/pawbby_resident.lua   Resident script, 5 s interval (LM setting)
+    src/pawbby_resident.lua   Resident script, sleep 0 (1 s event loop; LM setting)
     docs/DATAPOINTS.md        DP map, confirmed payloads, state machine
     docs/PROTOCOL.md          Frame format, handshake, crypto notes
     tests/run.sh              Offline syntax check + visit replay (no LM)

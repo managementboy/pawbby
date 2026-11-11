@@ -69,7 +69,7 @@ storage = { get = function(k) return store[k], 'x' end,  -- 2nd value like LM
             set = function(k, v) store[k] = v end }
 encdec = { base64dec = b64dec }
 package.preload['user.tuya34'] = function() return { new = function() return dev end } end
-package.preload['socket'] = function() return { gettime = function() return clock end } end
+package.preload['socket'] = function() return { gettime = function() return clock end, sleep = function() end } end
 package.preload['encdec'] = function() return encdec end
 
 local chunk = assert(loadstring(SRC, '=pawbby_resident'))
@@ -387,5 +387,46 @@ local before = #logs
 pawbby = nil
 run({ idle })
 check(not table.concat(logs, '\n', before + 1):find('rebuilt', 1, true), 'no second rebuild on restart')
+
+---------------------------------------- 11. phase 2 diagnostics -------
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+check(objects['32/3/22'] == 0 and objects['32/3/23'] == 0 and objects['32/3/27'] == '-',
+  'diagnostic objects created with initial values')
+visit(4300)
+check(objects['32/3/22'] == 11, 'visit seconds from DP 107 byte 8 (got ' .. tostring(objects['32/3/22']) .. ')')
+check(samples('107')[1].s == 11, 'visit seconds stored with the sample')
+-- an auto clean of 125 s (25 cycles of 5 s)
+local cyc = { { { ['116'] = 'work_aclean' } } }
+for i = 1, 24 do cyc[#cyc + 1] = idle end
+cyc[#cyc + 1] = { { ['116'] = 'work_idle' } }
+run(cyc)
+check(objects['32/3/23'] == 1 and objects['32/3/24'] == 125,
+  'clean counted with its duration (got ' .. tostring(objects['32/3/23']) .. ', ' .. tostring(objects['32/3/24']) .. ')')
+run({ { { ['114'] = 'roller_ok', ['115'] = 'day_30', ['117'] = 'cu=12 FG=3 BRK=0 PWM=80 POWER=1' } } })
+check(objects['32/3/26'] == 'roller_ok' and objects['32/3/25'] == 'day_30', 'DP 114/115 on their objects')
+check(objects['32/3/27'] == 'cu=12 FG=3 BRK=0 PWM=80 POWER=1', 'DP 117 motor debug on its object')
+run({ { { ['108'] = 'AQAAEk1HUzEwNDA0MjUwNDE4MDA0NA==' } } })
+check(objects['32/3/28'] == 'MGS104042504180044', 'DP 108 decoded (got ' .. tostring(objects['32/3/28']) .. ')')
+check(pawbby.dps['112'].n >= 1 and pawbby.dps['108'] ~= nil, 'datapoint inventory kept')
+check(#alerts == 0, 'no alerts from the diagnostic DPs')
+-- tare: refused with litter in, sent with an empty drum
+objects['32/3/30'] = true
+run({ idle })
+check(#writes == 0 and logged('tare REFUSED (scale reads 2342 g'), 'no tare with litter in the drum')
+check(objects['32/3/30'] == false, 'tare button cleared')
+run({ { { ['112'] = 12 } } })
+objects['32/3/30'] = true
+run({ idle })
+check(#writes == 1 and writes[1]['109'] == 'AQEAAA==' and logged('tare sent'), 'tare sent on an empty drum')
+run({ { { ['116'] = 'cat_enter' } } })
+objects['32/3/30'] = true
+run({ idle })
+check(#writes == 1 and logged('tare REFUSED (state cat_enter)'), 'no tare with a cat inside')
+-- midnight resets the day counters
+clock = clock + 86400
+run({ idle })
+check(objects['32/3/23'] == 0 and objects['32/3/29'] == 0, 'cleans and connections reset at midnight')
+dump('diagnostics')
 
 print('ALL CHECKS PASSED')

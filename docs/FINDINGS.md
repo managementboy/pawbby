@@ -158,3 +158,26 @@ daily weight = median of the day's weighings (`pawbby_dayweights`), and a
 weight alert needs 2 low days in a row. On deploy the 30-day history was
 rebuilt from the samples (57 cat-days) and re-checked without alerting: no
 alert for either cat.
+
+## "badjson (cmd 8)": header bytes are not always zero (2026-11-11)
+
+Broadcasts carry the 15-byte header "3.4" + 12 bytes. Those 12 bytes are not
+always zero: `00 00 00 00 00 00 78 7b 00 00 00 01` was seen twice. The parser
+looked for the first `{`, and 0x7b is `{`, so it started the JSON inside the
+header and dropped the frame (two DP 111/113 updates on 10-11 Nov). Fixed in
+`tuya34.lua`: a frame starting with "3.4" has its 15 header bytes skipped by
+length.
+
+## Event loop (2026-11-11)
+
+Script 64 now runs with sleep 0. Each pass waits on the socket for up to 1 s,
+so frames are handled as they arrive (was: sleep 5, up to 5 s late). Offline
+and no-keys paths sleep explicitly so the loop never spins. LM load after the
+change: 0 % CPU.
+
+## Deploying the library over SSH
+
+User libraries live in `/usr/share/lua/user/<name>.luas` (source) and
+`<name>.lua` = `string.dump(loadstring(src, '@/usr/share/lua/user/<name>.luas'))`
+(not stripped). Recompiling the existing tuya34 that way gave a byte-identical
+file. The resident re-requires the library on its next start.

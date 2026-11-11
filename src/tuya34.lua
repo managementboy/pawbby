@@ -328,6 +328,12 @@ function Device:poll(timeout)
 
   -- the plaintext is returned on failure: without debug on, it is the only
   -- trace of a frame this parser does not understand
+  --[[ Skip the 15 byte "3.4" header by length, not by searching for '{':
+       its 12 "zero" bytes are not always zero (seen 2026-11-10/11:
+       "3.4" .. 00 00 00 00 00 00 78 7b 00 00 00 01), and a 0x7b byte in
+       there is a '{', which made the JSON start in the wrong place
+       ("badjson (cmd 8)") and dropped those DP 111/113 updates. ]]
+  if plain:sub(1, 3) == '3.4' and #plain > 15 then plain = plain:sub(16) end
   local s = plain:find('{')
   if not s then return nil, 'nojson', cmd, plain end
   local okj, obj = pcall(json.decode, plain:sub(s))

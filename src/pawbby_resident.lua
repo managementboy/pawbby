@@ -98,6 +98,16 @@ local GA = {
   flatten  = '32/3/10',   -- command: level the litter       (1    bool)
   clean    = '32/3/12',   -- command: clean now              (1    bool)
   empty    = '32/3/11',   -- command: DUMP the tray          (1    bool)
+  -- diagnostics (2026-11-11, phase 2)
+  visitsecs  = '32/3/22',  -- last visit: seconds in the box, from DP 107 byte 8 (7 uint16)
+  cleans     = '32/3/23',  -- clean cycles today                  (5    uint8)
+  cleansecs  = '32/3/24',  -- last clean cycle, seconds           (7    uint16)
+  deodorant  = '32/3/25',  -- DP 115 deodorant cartridge, raw     (16   string)
+  motor      = '32/3/26',  -- DP 114 motor / drum status, raw     (16   string)
+  motordbg   = '32/3/27',  -- DP 117 motor debug text             (255  text)
+  device     = '32/3/28',  -- DP 108 device info, decoded text    (255  text)
+  connects   = '32/3/29',  -- connections made today (1 = no drop) (7  uint16)
+  tare       = '32/3/30',  -- command: zero the scale, EMPTY drum only (1 bool)
 }
 
 local CAT_KG     = { GA.cat1kg, GA.cat2kg }
@@ -124,13 +134,22 @@ local OBJECTS = {
   { ga = GA.flatten,  dt = 1,  name = 'Pawbby Flatten' },
   { ga = GA.clean,    dt = 1,  name = 'Pawbby Clean Now' },
   { ga = GA.empty,    dt = 1,  name = 'Pawbby Empty (DUMP)' },
+  { ga = GA.visitsecs, dt = 7,  name = 'Pawbby Last Visit Seconds', units = 's' },
+  { ga = GA.cleans,    dt = 5,  name = 'Pawbby Cleans Today' },
+  { ga = GA.cleansecs, dt = 7,  name = 'Pawbby Last Clean Seconds', units = 's' },
+  { ga = GA.deodorant, dt = 16, name = 'Pawbby Deodorant (DP115)' },
+  { ga = GA.motor,     dt = 16, name = 'Pawbby Motor Status (DP114)' },
+  { ga = GA.motordbg,  dt = 255, name = 'Pawbby Motor Debug (DP117)' },
+  { ga = GA.device,    dt = 255, name = 'Pawbby Device Info (DP108)' },
+  { ga = GA.connects,  dt = 7,  name = 'Pawbby Connections Today' },
+  { ga = GA.tare,      dt = 1,  name = 'Pawbby Tare (empty drum only)' },
 }
 
 --[[ Create any object that does not exist yet; runs on script start. A new
      object has no value at all until something writes it (the object list
      shows 0, but Mosaic will not offer it), so give it a neutral one. Text
      objects get visible text: Mosaic shows an empty string as no value. ]]
-local INITIAL = { [1] = false, [5] = 0, [9] = 0, [16] = '-' }
+local INITIAL = { [1] = false, [5] = 0, [7] = 0, [9] = 0, [16] = '-', [255] = '-' }
 
 local function ensureobjects()
   for _, o in ipairs(OBJECTS) do
@@ -217,8 +236,11 @@ end
      Evidence, not a spec: all three samples known (one here, two in the
      Pawbby-Reborn notes) share that header and hold 4248, 4176 and 4049 g,
      and 4049 is also the DP 111/113 reading in the Reborn status capture.
-     Byte 8 is unknown (11, 21, 34). Anything else returns nil, and every
-     visit logs this weight next to the scale peak so it keeps being checked. ]]
+     Byte 8 (second return value) is the visit length in seconds: on five
+     logged visits (9-11 Nov 2026) it was 12, 15, 16, 64, 112, each the time
+     from cat_enter to cat_leave minus 17-21 s. Anything else returns nil, and
+     every visit logs this weight next to the scale peak so it keeps being
+     checked. ]]
 local function weight107(b64)
   local okd, raw = pcall(encdec.base64dec, b64)
   if not okd or type(raw) ~= 'string' or #raw ~= 9 then return nil end
@@ -226,7 +248,7 @@ local function weight107(b64)
   if b[1] ~= 1 or b[2] ~= 0 or b[3] ~= 0 or b[4] ~= 5 then return nil end
   local w = b[5] * 256 + b[6]
   if w < 1000 or w > 12000 then return nil end
-  return w
+  return w, b[8]
 end
 
 --[[ Two-cluster split of the recent DP 107 weights. For sorted 1-D data the
@@ -277,10 +299,10 @@ local function identify(w, bands)
 end
 
 -- a visit weighed by the box: store the sample, name the cat, publish
-local function recordcat(w, payload)
+local function recordcat(w, payload, secs)
   local samples = storage.get('pawbby_samples')
   if type(samples) ~= 'table' then samples = {} end
-  samples[#samples + 1] = { t = os.time(), w = w, src = '107', p107 = payload }
+  samples[#samples + 1] = { t = os.time(), w = w, src = '107', p107 = payload, s = secs }
   -- keep storage bounded; learning only looks at the newest LEARN_WINDOW
   while #samples > 300 do table.remove(samples, 1) end
   local bands, why = learncats(samples)
@@ -290,6 +312,7 @@ local function recordcat(w, payload)
   storage.set('pawbby_samples', samples)
   put(GA.catkg, w)
   put(GA.catname, who)
+  if secs then grp.write(GA.visitsecs, secs) end
   if idx then
     -- grp.write, not put: the object timestamp should show this visit
     grp.write(CAT_KG[idx], w)
@@ -305,7 +328,7 @@ local function recordcat(w, payload)
     storage.set('pawbby_catvisits', cv)
     put(CAT_VISITS[idx], cv[who])
   end
-  log('pawbby: cat ' .. who .. ' ' .. w .. ' g ('
+  log('pawbby: cat ' .. who .. ' ' .. w .. ' g, ' .. tostring(secs) .. ' s ('
       .. (bands and ('bands ' .. math.floor(bands[1] + 0.5) .. '/'
                      .. math.floor(bands[2] + 0.5) .. ' g') or why)
       .. ') sample #' .. #samples)
@@ -609,6 +632,7 @@ if not pawbby then
       PAWBBY_NOKEYS = true
       log('pawbby: no Tuya id/key in storage (pawbby_tuya), not connecting')
     end
+    socket.sleep(5)   -- the resident runs with sleep 0: do not spin
     return
   end
   CFG.id, CFG.key = tk.id, tk.key
@@ -632,6 +656,10 @@ if not pawbby then
     nextretry = 0,
     last = {},
     visits = (tonumber((storage.get('pawbby_visits'))) or 0),
+    -- datapoint inventory, persisted to storage every 10 min (not per frame:
+    -- the LM's SD card failed once already)
+    dps = (type(storage.get('pawbby_dps')) == 'table' and storage.get('pawbby_dps')) or {},
+    nextdps = 0,
   }
   -- earlier versions parked harmless trace DPs (102, 108, ...) in the Fault
   -- object. Clear any such leftover, and an empty string (Mosaic shows '' as
@@ -702,6 +730,10 @@ if prevday ~= today then
   storage.set('pawbby_catvisits', {})
   storage.set('pawbby_dayweights', {})
   storage.set('pawbby_elim', {})
+  storage.set('pawbby_cleans', 0)
+  storage.set('pawbby_connects', 0)
+  grp.write(GA.cleans, 0)
+  grp.write(GA.connects, 0)
   for _, ga in ipairs(CAT_VISITS) do grp.write(ga, 0) end
   log('pawbby: new day ' .. today .. ', visit counters reset')
 end
@@ -743,7 +775,10 @@ if not dev:connected() then
   if now >= pawbby.nextretry then
     local okc, err = dev:connect(5)
     if okc then
-      log('pawbby: connected, session key established')
+      local n = (tonumber((storage.get('pawbby_connects'))) or 0) + 1
+      storage.set('pawbby_connects', n)
+      put(GA.connects, n)
+      log('pawbby: connected, session key established (connection ' .. n .. ' today)')
       pawbby.last = {}
       pawbby.nextbeat = now + 10
       pawbby.nextquery = 0
@@ -753,6 +788,7 @@ if not dev:connected() then
       pawbby.nextretry = now + 15
     end
   end
+  socket.sleep(1)   -- the resident runs with sleep 0: do not spin while offline
   return
 end
 
@@ -765,12 +801,18 @@ if now >= pawbby.nextbeat then
 end
 
 -- CONFIRMED: this box answers query variant 1 (DP_QUERY 0x0a) only.
--- During a visit, query every cycle: we do not know that the box broadcasts
+-- During a visit, query every 5 s: we do not know that the box broadcasts
 -- DP 112 while a cat is inside, and a missed peak measures 0 g.
 local visiting = pawbby.inbox or pawbby.settle
-if now >= pawbby.nextquery or visiting then
+if now >= pawbby.nextquery or (visiting and now >= (pawbby.nextvquery or 0)) then
   dev:query(1)
   pawbby.nextquery = now + 60
+  pawbby.nextvquery = now + 5
+end
+
+if now >= pawbby.nextdps then
+  pawbby.nextdps = now + 600
+  storage.set('pawbby_dps', pawbby.dps)
 end
 
 if pawbby.settle and not pawbby.inbox and now >= pawbby.settle then
@@ -825,6 +867,24 @@ if pawbby.cleansent and now >= pawbby.cleansent + CLEAN_WATCH then
   log('pawbby: clean command: no clean state within ' .. CLEAN_WATCH .. ' s')
 end
 
+--[[ Tare zeroes the scale (DP 109 01 01 00 00, confirmed 2026-09-17). Done
+     with litter in, it would make the litter read as 0 g and spoil the cat
+     weights, so it is only sent when the box is idle and the scale reads
+     under TARE_MAX_G: an empty drum. ]]
+local TARE_MAX_G = 500
+if takecmd(GA.tare) then
+  local why = cleanblocked()
+  if not why and math.abs(pawbby.w or 1e9) >= TARE_MAX_G then
+    why = 'scale reads ' .. tostring(pawbby.w) .. ' g, drum not empty'
+  end
+  if why then
+    log('pawbby: tare REFUSED (' .. why .. ')')
+  else
+    dev:set({ ['109'] = 'AQEAAA==' })
+    log('pawbby: tare sent (scale was ' .. pawbby.w .. ' g)')
+  end
+end
+
 if takecmd(GA.empty) then
   dev:set({ ['106'] = CMDS.empty })
   log('pawbby: EMPTY (dump) requested via ' .. GA.empty)
@@ -874,14 +934,23 @@ local STATE_TEXT = {
   roller_uninstall_ok = 'Drum removed',
 }
 
-local deadline = socket.gettime() + 0.8
+--[[ Event loop: the resident runs with sleep 0, and each pass waits on the
+     socket for up to POLL_S, so a frame from the box is handled the moment it
+     arrives and the KNX command objects are looked at about once a second.
+     (Before 2026-11-11: sleep 5 and 0.8 s of polling, i.e. up to 5 s late.) ]]
+local POLL_S = 1.0
+local deadline = socket.gettime() + POLL_S
 
 while socket.gettime() < deadline do
-  local dps, info, rcmd, rplain = dev:poll(0.1)
+  local dps, info, rcmd, rplain = dev:poll(math.max(0.05, deadline - socket.gettime()))
 
   if dps then
     for k, v in pairs(dps) do
       local key, s = tostring(k), tostring(v)
+      -- inventory of every datapoint the box sends: last value, time, count
+      local e = pawbby.dps[key] or { n = 0 }
+      e.v, e.t, e.n = s:sub(1, 120), now, e.n + 1
+      pawbby.dps[key] = e
 
       --[[ DP 107 bypasses the change filter: two visits can carry the same
            payload. It is not part of query replies (a reconnect, which
@@ -898,10 +967,10 @@ while socket.gettime() < deadline do
           pawbby.visitclear = now + 2
           log('pawbby: CAT VISIT (dp 107 = ' .. s .. ' [' .. hexdump(s)
               .. ']) count ' .. pawbby.visits)
-          local w = weight107(s)
+          local w, secs = weight107(s)
           if w then
             pawbby.visit107w = w
-            local who = recordcat(w, s)
+            local who = recordcat(w, s, secs)
             --[[ Acute: an unusually busy day of litter-box visits can mean a
                  urinary problem or blockage (more so in a male cat). Alert
                  once, when the per-cat daily count first crosses ACUTE_VISITS;
@@ -950,6 +1019,21 @@ while socket.gettime() < deadline do
             if BUSY_STATES[s] then pawbby.cleansent = nil end
           end
 
+          --[[ Clean cycle statistics: count and duration of every auto or
+               manual clean, from entering a clean state to the next state
+               that is not busy. ]]
+          if (s == 'work_aclean' or s == 'work_mclean') and not pawbby.cleanstart then
+            pawbby.cleanstart = now
+          elseif pawbby.cleanstart and not BUSY_STATES[s] then
+            local secs = now - pawbby.cleanstart
+            pawbby.cleanstart = nil
+            local n = (tonumber((storage.get('pawbby_cleans'))) or 0) + 1
+            storage.set('pawbby_cleans', n)
+            put(GA.cleans, n)
+            grp.write(GA.cleansecs, secs)
+            log('pawbby: clean #' .. n .. ' today took ' .. secs .. ' s')
+          end
+
           -- litter level, reported as a state pair
           if s == 'cat_litter_little' then put(GA.litterlow, true) end
           if s:find('cat_litter_eno') then put(GA.litterlow, false) end
@@ -978,6 +1062,18 @@ while socket.gettime() < deadline do
             pawbby.settle = now + VISIT_SETTLE
           end
 
+        elseif key == '114' then
+          put(GA.motor, s:sub(1, 14))
+          log('pawbby: dp 114 (motor) = ' .. s)
+
+        elseif key == '115' then
+          put(GA.deodorant, s:sub(1, 14))
+          log('pawbby: dp 115 (deodorant) = ' .. s)
+
+        elseif key == '117' then
+          -- changes often while the drum turns: object only, no log line
+          put(GA.motordbg, s:sub(1, 250))
+
         elseif key == '113' then
           -- possibly the box's own cat weight (see weight107); trace in visits
           if pawbby.inbox or pawbby.settle then
@@ -986,6 +1082,12 @@ while socket.gettime() < deadline do
 
         elseif TRACE_DP[key] then
           log('pawbby: dp ' .. key .. ' = ' .. s .. ' [' .. hexdump(s) .. ']')
+          if key == '108' then
+            -- 01 00 00 <len> <ascii>: keep the printable part (model/serial)
+            local okd, raw = pcall(encdec.base64dec, s)
+            local txt = okd and type(raw) == 'string' and raw:sub(5):gsub('[^%w%p ]', '') or ''
+            if txt ~= '' then put(GA.device, txt:sub(1, 250)) end
+          end
 
         elseif not KNOWN_DP[key] then
           --[[ Any datapoint we have not mapped yet. The fault code DP only

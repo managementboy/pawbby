@@ -303,6 +303,11 @@ check(objects['32/3/20'] == true, 'trend change raises health alert')
 check(logged('HEALTH'), 'health summary logged')
 check(logged('Isma wt -8%'), 'Isma weight loss over two low days flagged')
 check(logged('Charlie no visit'), 'Charlie zero-visit flagged')
+local nd = 0
+for _, a in ipairs(alerts) do if a:find('Daily check', 1, true) then nd = nd + 1 end end
+check(nd == 2, 'one daily alert per issue (got ' .. nd .. ')')
+check(logged('{cat.weight_drop|cat=Isma|pct=8|days=2}') and logged('{cat.daily|cat=Charlie|kind=no_visit}'),
+  'daily alert codes logged')
 check(store.pawbby_daily[#store.pawbby_daily].Isma.w == 4910, 'daily weight is the median of the day')
 check(next(store.pawbby_dayweights) == nil, 'day weighings reset at midnight')
 
@@ -505,8 +510,9 @@ dev.connected = function() return true end
 local sent = {}
 package.preload['user.alerts'] = function()
   -- _G: this file has a local named alerts (the LM alert() capture)
-  _G.alerts = { send = function(feed, level, source, text, detail)
-    sent[#sent + 1] = { feed = feed, level = level, source = source, text = text, detail = detail }
+  _G.alerts = { send = function(feed, level, source, text, detail, opts)
+    sent[#sent + 1] = { feed = feed, level = level, source = source, text = text, detail = detail,
+      code = opts and opts.code }
     return true
   end }
   return _G.alerts
@@ -522,9 +528,12 @@ local function find(feed, txt)
 end
 local t = find('system', 'Test alert')
 check(t and t.level == 1 and t.source == 'Litter box', 'test alert goes to the system feed (admin phone only)')
+check(t.code and t.code:find('^test|time=%d%d:%d%d$') ~= nil,
+  'test alert code (got ' .. tostring(t.code) .. ')')
 local m = find('system', "The drum doesn't turn")
 check(m and m.level == 2 and m.detail:find('DP 114 = motor_err', 1, true), 'motor fault to system with detail')
 check(objects['32/3/15'] == 'Motor fault', 'motor fault in words on Fault')
+check(m.code == 'box.fault|fault=Motor fault', 'fault code (got ' .. tostring(m.code) .. ')')
 check(objects['32/3/32'] == nil or objects['32/3/32'] == 0, 'old litter-box feed not written when the library is there')
 -- cat alerts go to general
 store.pawbby_samples = {}
@@ -533,6 +542,7 @@ for _, w in ipairs({ 4100, 4120, 4090 }) do store.pawbby_samples[#store.pawbby_s
 for i = 1, 4 do visit(5300 + i * 3) end
 local f = find('general', 'times in the last 2 hours')
 check(f and f.level == 3 and f.source == 'Cats', 'frequent visits go to the general feed as urgent')
+check(f.code == 'cat.many_visits|cat=Isma|n=4|hours=2|sex=male', 'frequent visits code (got ' .. tostring(f.code) .. ')')
 package.preload['user.alerts'] = nil
 package.loaded['user.alerts'] = nil
 _G.alerts = nil
@@ -648,5 +658,82 @@ run({ { { ['102'] = NOFAULT } } })
 run({ { { ['199'] = 'AQIDBAUGBwgJCgsM' } }, { { ['114'] = 'some_very_long_part_err' } } })
 fits('32/3/15', objects['32/3/15'], 'unknown _err')
 print('32/3/15 values: ' .. table.concat(seen15, ', '))
+
+-------------------------------------------- 17. pee / poo (phase 4) -------
+world()
+store.pawbby_samples_v2 = true   -- not the one-shot wipe of 2026-09
+-- history: 12 Isma visits 8-2 days ago (20..42 s), 12 Charlie visits (10..32 s)
+store.pawbby_samples = {}
+for i = 1, 12 do
+  local tt = T0 - 8 * 86400 + i * 12 * 3600 + 1800
+  table.insert(store.pawbby_samples, { t = tt, w = 5300 + i, src = '107', who = 'Isma', s = 18 + 2 * i })
+  table.insert(store.pawbby_samples, { t = tt + 600, w = 4200 + i, src = '107', who = 'Charlie',
+    p107 = b64enc(string.char(1, 0, 0, 5, 16, 104, 0, 8 + 2 * i, 0)) })   -- s from DP 107 byte 7
+end
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+check(objects['32/5/12'] == 0 and objects['32/5/17'] == 0 and objects['32/3/39'] ~= nil, 'phase 4 objects created')
+-- the queue starts with the oldest visit inside 7 days (i = 2: 12 h x 2 - 8 d is older than 7 d)
+local first
+for _, x in ipairs(store.pawbby_samples) do
+  if T0 - x.t <= 7 * 86400 then first = x; break end
+end
+check(pawbby.labt == first.t, 'oldest visit of the last 7 days on show')
+check(objects['32/3/43'] == 22, 'labels left (got ' .. tostring(objects['32/3/43']) .. ')')
+local txt = objects['32/3/38']
+check(txt:find('^' .. first.who .. ' %a%a%a %d%d:%d%d 0:%d%d · guess %a+$') ~= nil, 'label text (got ' .. txt .. ')')
+check(objects['32/3/39'] == first.g and first.gwhy:find('p50') ~= nil, 'guess shown, basis stored')
+objects['32/3/40'] = true
+run({ idle })
+check(first.lab == 'pee' and objects['32/3/40'] == false, 'pee label stored, button cleared')
+check(pawbby.labt ~= first.t and objects['32/3/43'] == 21, 'next visit on show')
+check(logged('label ' .. first.who), 'label logged')
+objects['32/3/42'] = true
+run({ idle })
+check(objects['32/3/43'] == 20, 'skip moves on')
+-- a new visit today: Isma, 11 s from p107() -> pee, counted as guessed
+for i = 1, 3 do visit(5300); visit(4200) end
+check(objects['32/5/12'] == 3 and objects['32/5/14'] == 3 and objects['32/5/13'] == 0,
+  'Isma pees today from guesses (got ' .. tostring(objects['32/5/12']) .. '/' .. tostring(objects['32/5/14']) .. ')')
+local today = store.pawbby_samples[#store.pawbby_samples - 1]
+check(today.who == 'Isma' and today.g == 'pee' and today.gwhy == '11 s; Isma p50 28 s, p67 34 s of 15',
+  'new visit guessed at once (got ' .. tostring(today.gwhy) .. ')')
+local vl = store.pawbby_visitlog
+check(vl[#vl].g ~= nil and vl[#vl].gwhy ~= nil, 'guess written into the visit record')
+-- label today's last Isma visit poo: counts move from guess to label
+pawbby.labt = today.t
+objects['32/3/41'] = true
+run({ idle })
+check(today.lab == 'poo' and objects['32/5/13'] == 1 and objects['32/5/12'] == 2 and objects['32/5/14'] == 2,
+  'label overrides the guess in the day count')
+local rec
+for i = #vl, 1, -1 do if vl[i].w == today.w then rec = vl[i]; break end end
+check(rec and rec.lab == 'poo', 'label mirrored into the visit record')
+-- a long and a middling Isma visit: poo and unsure
+local function visitlen(sec)
+  run({ { { ['116'] = 'cat_enter' } }, { { ['112'] = 2342 + 5300 } },
+    { { ['107'] = b64enc(string.char(1, 0, 0, 5, 20, 180, 0, sec, 0)) } }, { { ['112'] = 2342 } },
+    { { ['116'] = 'cat_near_leave' } }, idle, idle, idle, idle, { { ['116'] = 'work_idle' } } })
+  return store.pawbby_samples[#store.pawbby_samples]
+end
+local long, mid = visitlen(60), visitlen(32)
+check(long.g == 'poo', 'a 60 s visit guessed poo (' .. tostring(long.gwhy) .. ')')
+check(mid.g == 'unsure', 'a 32 s visit is unsure (' .. tostring(mid.gwhy) .. ')')
+check(objects['32/5/13'] == 2 and objects['32/5/15'] == 1, 'poos and unsure today')
+-- accuracy from 20 labels: 15 matching
+store.pawbby_samples = {}
+for i = 1, 20 do
+  table.insert(store.pawbby_samples, { t = clock - i * 3600, w = 4200, src = '107', who = 'Charlie', s = 20,
+    g = 'pee', lab = i <= 15 and 'pee' or 'poo' })
+end
+objects['32/3/42'] = true   -- any label action re-computes; nothing on show, so it is ignored
+pawbby.labt = nil
+run({ idle })
+pawbby = nil   -- restart: accuracy is published on start too
+run({ idle })
+check(objects['32/6/16'] == 20 and objects['32/6/17'] == 75, 'Charlie accuracy 15/20 = 75% (got '
+  .. tostring(objects['32/6/16']) .. ', ' .. tostring(objects['32/6/17']) .. ')')
+check(logged('guess accuracy Charlie 15/20 = 75%'), 'accuracy logged')
+check(objects['32/3/38'] == 'None' and objects['32/3/39'] == '-' and objects['32/3/43'] == 0, 'empty queue shows None')
+dump('pee poo')
 
 print('ALL CHECKS PASSED')

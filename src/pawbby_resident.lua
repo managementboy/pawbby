@@ -130,6 +130,13 @@ local GA = {
   drawerfull = '32/3/35',  -- waste drawer full, DP 116 collect_full  (1   bool)
   litterout  = '32/3/36',  -- no litter, DP 116 cat_litter_none        (1   bool)
   cattoolong = '32/3/37',  -- a cat in the box too long, DP 116        (1   bool)
+  -- pee / poo labelling for the app, admin only (phase 4)
+  labtext    = '32/3/38',  -- visit to label: "Isma Wed 04:24 1:52 · guess poo" (255 text)
+  labguess   = '32/3/39',  -- its guess: pee, poo, unsure; '-' when none (16 string)
+  labpee     = '32/3/40',  -- command: label it pee                   (1    bool)
+  labpoo     = '32/3/41',  -- command: label it poo                   (1    bool)
+  labskip    = '32/3/42',  -- command: skip it (can't tell)           (1    bool)
+  lableft    = '32/3/43',  -- unlabelled visits in the queue          (7    uint16)
 }
 
 local CAT_KG     = { GA.cat1kg, GA.cat2kg }
@@ -172,6 +179,12 @@ local OBJECTS = {
   { ga = GA.drawerfull, dt = 1,   name = 'Pawbby Waste Drawer Full' },
   { ga = GA.litterout,  dt = 1,   name = 'Pawbby Litter Empty' },
   { ga = GA.cattoolong, dt = 1,   name = 'Pawbby Cat Inside Too Long' },
+  { ga = GA.labtext,  dt = 255, name = 'Pawbby Label Visit', init = 'None' },
+  { ga = GA.labguess, dt = 16,  name = 'Pawbby Label Guess' },
+  { ga = GA.labpee,   dt = 1,   name = 'Pawbby Label Pee' },
+  { ga = GA.labpoo,   dt = 1,   name = 'Pawbby Label Poo' },
+  { ga = GA.labskip,  dt = 1,   name = 'Pawbby Label Skip' },
+  { ga = GA.lableft,  dt = 7,   name = 'Pawbby Labels Left' },
 }
 
 --[[ One block of objects per cat (phase 3): 32/5/x Isma, 32/6/x Charlie.
@@ -183,6 +196,9 @@ for i, name in ipairs(CAT_NAMES) do
     last = m .. '1', since = m .. '2', secs = m .. '3', w = m .. '4', w7 = m .. '5',
     wchg = m .. '6', visits = m .. '7', vday = m .. '8', health = m .. '9', level = m .. '10',
     limit = m .. '11',
+    -- phase 4: pee / poo today (labels where given, else the guess), accuracy
+    pees = m .. '12', poos = m .. '13', guessed = m .. '14', unsure = m .. '15',
+    labels = m .. '16', acc = m .. '17',
   }
   CATGA[name] = c
   local P = 'Pawbby ' .. name .. ' '
@@ -198,6 +214,12 @@ for i, name in ipairs(CAT_NAMES) do
     { c.health, 16, 'Health', nil, 'All good' },
     { c.level,  5,  'Health Level' },
     { c.limit,  7,  'No-Visit Alert After', 'h' },
+    { c.pees,    5, 'Pees Today' },
+    { c.poos,    5, 'Poos Today' },
+    { c.guessed, 5, 'Pee/Poo Guessed Today' },
+    { c.unsure,  5, 'Unsure Today' },
+    { c.labels,  7, 'Pee/Poo Labels' },
+    { c.acc,     5, 'Guess Accuracy', '%' },
   }) do
     OBJECTS[#OBJECTS + 1] = { ga = o[1], dt = o[2], name = P .. o[3], units = o[4], init = o[5] }
   end
@@ -412,6 +434,34 @@ local function identify(w, bands)
   return idx
 end
 
+-- pee / poo guess per visit: see the phase 4 section further down
+local PP_LO, PP_HI = 0.50, 0.67  -- percentiles of the cat's own visit lengths
+local PP_MIN    = 10    -- visits with a length before a cat gets guesses
+local PP_WINDOW = 100   -- newest visits per cat used for the percentiles
+local LABEL_DAYS = 7    -- the label queue covers this many days
+local ACC_MIN   = 20    -- labels per cat before the accuracy is published
+
+local function secsof(x) return x.s or (x.p107 and select(2, weight107(x.p107))) end
+
+local function ppguess(samples, x)
+  local s = secsof(x)
+  if not s then return 'unsure', 'no visit length' end
+  local ss = {}
+  for i = #samples, 1, -1 do
+    local y = samples[i]
+    if y.src == '107' and y.who == x.who then
+      ss[#ss + 1] = secsof(y)
+      if #ss >= PP_WINDOW then break end
+    end
+  end
+  if #ss < PP_MIN then return 'unsure', s .. ' s; learning ' .. #ss .. '/' .. PP_MIN end
+  table.sort(ss)
+  local lo = ss[math.max(1, math.ceil(#ss * PP_LO))]
+  local hi = ss[math.max(1, math.ceil(#ss * PP_HI))]
+  local g = (s <= lo and 'pee') or (s >= hi and 'poo') or 'unsure'
+  return g, s .. ' s; ' .. x.who .. ' p50 ' .. lo .. ' s, p67 ' .. hi .. ' s of ' .. #ss
+end
+
 -- a visit weighed by the box: store the sample, name the cat, publish
 local function recordcat(w, payload, secs)
   local samples = storage.get('pawbby_samples')
@@ -422,7 +472,13 @@ local function recordcat(w, payload, secs)
   local bands, why = learncats(samples)
   local idx = identify(w, bands)
   local who = idx and CAT_NAMES[idx] or 'Unknown'
-  samples[#samples].who = who
+  local x = samples[#samples]
+  x.who = who
+  if idx then
+    x.g, x.gwhy = ppguess(samples, x)
+    pawbby.visitg, pawbby.visitgwhy = x.g, x.gwhy
+    log('pawbby: guess ' .. who .. ' ' .. x.g .. ' (' .. x.gwhy .. ')')
+  end
   storage.set('pawbby_samples', samples)
   put(GA.catkg, w)
   put(GA.catname, who)
@@ -483,7 +539,18 @@ local LEVELTXT = { 'Info', 'Watch', 'Urgent' }
 local okal = pcall(require, 'user.alerts')
 local HAVE_ALERTS = okal and type(alerts) == 'table' and type(alerts.send) == 'function'
 
-local function raisealert(level, key, text, feed, detail)
+--[[ code: a stable code plus parameters, "name|key=value|...", so the app can
+     write the alert in the phone's language (German, English, Spanish); the
+     English text stays the fallback. Built with acode(). ]]
+local function acode(name, ...)
+  local p, out = { ... }, { name }
+  for i = 1, #p - 1, 2 do
+    out[#out + 1] = p[i] .. '=' .. tostring(p[i + 1]):gsub('[|=]', '/')
+  end
+  return table.concat(out, '|')
+end
+
+local function raisealert(level, key, text, feed, detail, code)
   local t = os.time()
   feed = feed or 'general'
   if key then
@@ -497,13 +564,15 @@ local function raisealert(level, key, text, feed, detail)
   local n = (tonumber((storage.get('pawbby_alertno'))) or 0) + 1
   storage.set('pawbby_alertno', n)
   if HAVE_ALERTS then
-    alerts.send(feed, level, feed == 'system' and 'Litter box' or 'Cats', text, detail)
+    alerts.send(feed, level, feed == 'system' and 'Litter box' or 'Cats', text, detail,
+      code and { code = code } or nil)
   else
     grp.write(GA.alerttext, text:sub(1, 250))
     grp.write(GA.alertlevel, level)
     grp.write(GA.alertno, n)
   end
-  log('pawbby: ALERT #' .. n .. ' [' .. LEVELTXT[level] .. '] (' .. feed .. ') ' .. text)
+  log('pawbby: ALERT #' .. n .. ' [' .. LEVELTXT[level] .. '] (' .. feed .. ') ' .. text
+    .. (code and (' {' .. code .. '}') or ''))
   if level >= 2 then
     alert('PAWBBY ' .. LEVELTXT[level] .. ': ' .. text)
     queue_email('PAWBBY ' .. LEVELTXT[level] .. ': ' .. text:sub(1, 60),
@@ -530,7 +599,7 @@ local function setfault(now, detail)
     log('pawbby: FAULT ' .. f[1] .. ' (' .. detail .. ')')
   end
   pawbby.faultdetail = detail
-  if not f[3] then raisealert(2, 'fault:' .. f[1], f[2], 'system', detail) end
+  if not f[3] then raisealert(2, 'fault:' .. f[1], f[2], 'system', detail, acode('box.fault', 'fault', f[1])) end
 end
 
 -- DP 102: 01 00 00 0b + 11 fault bytes. All zero clears every fault, DP 114
@@ -563,7 +632,7 @@ local function flagstate(s, now)
   if s == 'collect_full' then
     put(GA.drawerfull, true)
     raisealert(2, 'drawerfull', 'The waste drawer is full. Empty it and put in a new bag.',
-      'system', 'DP 116 = collect_full')
+      'system', 'DP 116 = collect_full', acode('box.drawer_full'))
   elseif s == 'collect_normal' then
     put(GA.drawerfull, false)
   elseif s == 'cat_litter_none' then
@@ -580,7 +649,8 @@ local function flagstate(s, now)
       log('pawbby: cat too long ignored, box being serviced')
     else
       raisealert(2, 'toolong', 'A cat has stayed in the litter box unusually long. Please check the cat.',
-        'general', 'DP 116 = cat_enter_too_long_time; state ' .. tostring(pawbby.last['116']))
+        'general', 'DP 116 = cat_enter_too_long_time; state ' .. tostring(pawbby.last['116']),
+        acode('cat.inside_too_long'))
     end
   elseif s == 'cat_enter_time_normal' then
     put(GA.cattoolong, false)
@@ -628,7 +698,7 @@ end
      also goes to the log and an LM alert. ]]
 -- quiet = re-evaluate and set the objects only: no LM alert, no email
 local function healthcheck(daily, quiet)
-  local issues = {}
+  local issues, codes = {}, {}   -- codes[i]: alert code of issues[i]
   local function base(series)
     local b = {}
     for k = math.max(1, #series - HEALTH_BASE_DAYS), #series - 1 do b[#b + 1] = series[k] end
@@ -648,9 +718,12 @@ local function healthcheck(daily, quiet)
       local mv = base(vis)
       if mv and mv >= 1 and (y.v or 0) == 0 then
         issues[#issues + 1] = name .. ' no visit'
+        codes[#issues] = acode('cat.daily', 'cat', name, 'kind', 'no_visit')
       end
       if mv and mv >= 2 and (y.v or 0) >= mv * HEALTH_SPIKE then
         issues[#issues + 1] = name .. ' visits ' .. (y.v or 0) .. '/' .. math.floor(mv + 0.5)
+        codes[#issues] = acode('cat.daily', 'cat', name, 'kind', 'many_visits', 'n', y.v or 0,
+          'base', math.floor(mv + 0.5))
       end
     end
     --[[ Weight: a cat's weighings swing by 100-150 g from day to day, so one
@@ -671,7 +744,9 @@ local function healthcheck(daily, quiet)
       end
       if low then
         local avg = sum / HEALTH_LOW_DAYS
-        issues[#issues + 1] = name .. ' wt -' .. math.floor((1 - avg / mw) * 100 + 0.5) .. '%'
+        local pc = math.floor((1 - avg / mw) * 100 + 0.5)
+        issues[#issues + 1] = name .. ' wt -' .. pc .. '%'
+        codes[#issues] = acode('cat.weight_drop', 'cat', name, 'pct', pc, 'days', HEALTH_LOW_DAYS)
       end
     end
   end
@@ -693,8 +768,12 @@ local function healthcheck(daily, quiet)
     put(GA.healthbad, true)
     put(GA.healthmsg, full:sub(1, 14))
     log('pawbby: HEALTH ' .. full)
-    raisealert(2, 'daily:' .. os.date('%Y-%m-%d'), 'Daily check: ' .. full
-      .. '. An early warning from the box, not a diagnosis: check the cat(s) and consider a vet.')
+    -- one alert per issue, so each carries its own code for the app
+    for i, txt in ipairs(issues) do
+      raisealert(2, 'daily:' .. os.date('%Y-%m-%d') .. ':' .. i, 'Daily check: ' .. txt
+        .. '. An early warning from the box, not a diagnosis: check the cat and consider a vet.',
+        nil, nil, codes[i])
+    end
   else
     put(GA.healthbad, false)
     put(GA.healthmsg, 'OK')
@@ -871,7 +950,8 @@ local function catvisit(who, w, secs, nvisits)
     raisealert(3, 'freq:' .. who, who .. ' used the litter box ' .. n
       .. ' times in the last 2 hours. Frequent trips can mean a urinary problem'
       .. (sexof(who) == 'male' and '; in a male cat a blockage is an emergency' or '')
-      .. '. Check ' .. who .. ' now.')
+      .. '. Check ' .. who .. ' now.', nil, nil,
+      acode('cat.many_visits', 'cat', who, 'n', n, 'hours', FREQ_WINDOW / 3600, 'sex', sexof(who)))
   end
 end
 
@@ -908,6 +988,144 @@ local function cathealth(t)
   end
 end
 
+------------------------------------------------- pee / poo (phase 4) ---
+
+--[[ No camera sees the box, so each counted visit gets a guess from its
+     length (DP 107 byte 7) against the same cat's own visit lengths: at or
+     below its median -> pee, at or above its 67th percentile -> poo, between
+     -> unsure. A cat pees two or three times per poo and a poo takes longer,
+     so that split is the starting point; the labels given in the app
+     (32/3/40-42) show whether it holds. The thresholds are not tuned
+     automatically yet. The deposit (tray weight after minus before) is in the
+     visit record but noisy (FINDINGS.md: litter use was noise), so it is not
+     used until the labels show it helps.
+     Stored on the sample in pawbby_samples (one per counted visit, also the
+     ones before phase 4): g guess, gwhy its basis, lab the label (pee, poo,
+     skip), labt when it was given. Mirrored into the pawbby_visitlog record
+     where one exists. ]]
+local function samplesof()
+  local samples = storage.get('pawbby_samples')
+  return type(samples) == 'table' and samples or {}
+end
+
+-- pees and poos today per cat: the label where given, else the guess
+local function pptoday(t)
+  local samples, day, changed = samplesof(), os.date('%Y-%m-%d', t), false
+  local c = {}
+  for _, name in ipairs(CAT_NAMES) do c[name] = { pee = 0, poo = 0, guessed = 0, unsure = 0 } end
+  for _, x in ipairs(samples) do
+    local n = x.src == '107' and c[x.who or '']
+    if n and os.date('%Y-%m-%d', x.t) == day then
+      if not x.g then x.g, x.gwhy = ppguess(samples, x); changed = true end
+      local k = (x.lab == 'pee' or x.lab == 'poo') and x.lab or x.g
+      if k == 'pee' or k == 'poo' then
+        n[k] = n[k] + 1
+        if k ~= x.lab then n.guessed = n.guessed + 1 end
+      else
+        n.unsure = n.unsure + 1
+      end
+    end
+  end
+  if changed then storage.set('pawbby_samples', samples) end
+  for name, n in pairs(c) do
+    local g = CATGA[name]
+    put(g.pees, n.pee); put(g.poos, n.poo); put(g.guessed, n.guessed); put(g.unsure, n.unsure)
+  end
+end
+
+-- how often the guess matched the label, per cat; published from ACC_MIN labels
+local function ppaccuracy(logit)
+  local samples = samplesof()
+  for _, name in ipairs(CAT_NAMES) do
+    local n, hit, unsure = 0, 0, 0
+    for _, x in ipairs(samples) do
+      if x.src == '107' and x.who == name and (x.lab == 'pee' or x.lab == 'poo') and x.g then
+        n = n + 1
+        if x.g == x.lab then hit = hit + 1 elseif x.g == 'unsure' then unsure = unsure + 1 end
+      end
+    end
+    put(CATGA[name].labels, n)
+    if n >= ACC_MIN then
+      local pc = math.floor(hit / n * 100 + 0.5)
+      put(CATGA[name].acc, pc)
+      if logit then
+        log('pawbby: guess accuracy ' .. name .. ' ' .. hit .. '/' .. n .. ' = ' .. pc
+          .. '% (' .. unsure .. ' unsure)')
+      end
+    end
+  end
+end
+
+-- the oldest unlabelled counted visit of the last LABEL_DAYS, for the app
+local function labelshow(t)
+  local samples = samplesof()
+  local cur, left = nil, 0
+  for _, x in ipairs(samples) do
+    if x.src == '107' and CATGA[x.who or ''] and not x.lab and t - x.t <= LABEL_DAYS * 86400 then
+      left = left + 1
+      cur = cur or x
+    end
+  end
+  local text, g = 'None', '-'
+  if cur then
+    if not cur.g then
+      cur.g, cur.gwhy = ppguess(samples, cur)
+      storage.set('pawbby_samples', samples)
+    end
+    local sec = secsof(cur)
+    text = cur.who .. ' ' .. os.date('%a %H:%M', cur.t) .. ' '
+      .. (sec and string.format('%d:%02d', math.floor(sec / 60), sec % 60) or '?')
+      .. ' · guess ' .. cur.g
+    g = cur.g
+  end
+  pawbby.labt = cur and cur.t
+  put(GA.labtext, text)
+  put(GA.labguess, g)
+  put(GA.lableft, left)
+end
+
+-- a label from the app for the visit on show; then the next one
+local function labelset(lab, t)
+  local samples, x = samplesof(), nil
+  for _, y in ipairs(samples) do
+    if y.src == '107' and y.t == pawbby.labt and not y.lab then x = y; break end
+  end
+  if not x then
+    log('pawbby: label ' .. lab .. ' ignored, no visit on show')
+    labelshow(t)
+    return
+  end
+  x.lab, x.labt = lab, t
+  storage.set('pawbby_samples', samples)
+  local vl = storage.get('pawbby_visitlog')
+  if type(vl) == 'table' then
+    for i = #vl, 1, -1 do
+      local r = vl[i]
+      if r.w == x.w and r.t0 and r.t0 - 60 <= x.t and x.t <= (r.t1 or r.t0) + 120 then
+        r.lab, r.g, r.gwhy = lab, r.g or x.g, r.gwhy or x.gwhy
+        storage.set('pawbby_visitlog', vl)
+        break
+      end
+    end
+  end
+  log('pawbby: label ' .. x.who .. ' ' .. os.date('%Y-%m-%d %H:%M', x.t) .. ' = ' .. lab
+    .. ' (guess ' .. tostring(x.g) .. ': ' .. tostring(x.gwhy) .. ')')
+  pptoday(t)
+  ppaccuracy(true)
+  labelshow(t)
+end
+
+--[[ KNX command objects are momentary: the script clears them again so the
+     button in the visualisation always sends a fresh true. ]]
+local function takecmd(ga)
+  local obj = grp.find(ga)
+  if obj and obj.value == true then
+    grp.update(ga, false)
+    return true
+  end
+  return false
+end
+
 -- once a minute, connected or not
 local function minutetick(t)
   local cs = catstate()
@@ -919,7 +1137,9 @@ local function minutetick(t)
       if thr and t - last > thr then
         raisealert(2, 'gap:' .. name, name .. ' has not used the litter box for '
           .. math.floor((t - last) / 3600) .. ' hours (alert limit '
-          .. math.floor(thr / 3600 + 0.5) .. ' h, from ' .. name .. "'s own last 30 days).")
+          .. math.floor(thr / 3600 + 0.5) .. ' h, from ' .. name .. "'s own last 30 days).", nil, nil,
+          acode('cat.no_visit', 'cat', name, 'hours', math.floor((t - last) / 3600),
+            'limit', math.floor(thr / 3600 + 0.5)))
       end
     end
   end
@@ -931,26 +1151,29 @@ local function minutetick(t)
       raisealert(2, 'stuck:' .. st, 'The litter box has been in state ' .. st .. ' for '
         .. math.floor((t - since) / 60) .. ' minutes. Check that it is not jammed.', 'system',
         'DP 116 = ' .. st .. ' since ' .. os.date('%H:%M', since) .. '; DP 114 = '
-        .. tostring(pawbby.last['114']) .. '; DP 117 = ' .. tostring(pawbby.last['117']))
+        .. tostring(pawbby.last['114']) .. '; DP 117 = ' .. tostring(pawbby.last['117']),
+        acode('box.stuck', 'state', st, 'min', math.floor((t - since) / 60)))
     end
   end
   local f = pawbby.fault
   if f and f[3] and pawbby.faultsince and t - pawbby.faultsince >= FAULT_S then
     raisealert(2, 'fault:' .. f[1], f[2], 'system', tostring(pawbby.faultdetail)
-      .. '; since ' .. os.date('%H:%M', pawbby.faultsince))
+      .. '; since ' .. os.date('%H:%M', pawbby.faultsince), acode('box.fault', 'fault', f[1]))
   end
   if pawbby.emptysince and t - pawbby.emptysince >= FAULT_S then
     raisealert(2, 'litterout', 'The litter box has no litter. Add clumping litter (grains under 2 mm) '
       .. 'up to the MAX mark, then press Flatten.', 'system',
-      'DP 116 = cat_litter_none since ' .. os.date('%H:%M', pawbby.emptysince))
+      'DP 116 = cat_litter_none since ' .. os.date('%H:%M', pawbby.emptysince), acode('box.litter_empty'))
   end
   if pawbby.offsince and t - pawbby.offsince > OFFLINE_S then
     raisealert(2, 'offline', 'The litter box has been offline for '
       .. math.floor((t - pawbby.offsince) / 60) .. ' minutes.', 'system',
       'no Tuya session to ' .. CFG.ip .. ':6668 since ' .. os.date('%H:%M', pawbby.offsince)
-      .. '; last error: ' .. tostring(pawbby.lasterr))
+      .. '; last error: ' .. tostring(pawbby.lasterr),
+      acode('box.offline', 'min', math.floor((t - pawbby.offsince) / 60)))
   end
   cathealth(t)
+  labelshow(t)
 end
 
 --[[ One record per visit window, counted by the box or not: the base for
@@ -1009,6 +1232,8 @@ local function finishvisit()
     w = pawbby.visit107w, s = pawbby.visitsecs, peak = d,
     dep = (pawbby.w and pawbby.wbase) and math.floor(pawbby.w - pawbby.wbase + 0.5) or nil,
     lid = pawbby.lidseen or nil,
+    g = pawbby.visit107w and pawbby.visitg or nil,
+    gwhy = pawbby.visit107w and pawbby.visitgwhy or nil,
   }
   if not rec.w and not pawbby.lidseen and d >= 800 then
     local idx = identify(d, (learncats(storage.get('pawbby_samples') or {})))
@@ -1025,6 +1250,7 @@ local function finishvisit()
     end
   end
   logvisit(rec)
+  pawbby.visitg, pawbby.visitgwhy = nil, nil
   pawbby.visit107, pawbby.visit107w = nil, nil
   pawbby.visitwho, pawbby.visitsecs = nil, nil
 end
@@ -1126,6 +1352,9 @@ if not pawbby then
     put(CATGA[name].visits, (type(cv) == 'table' and cv[name]) or 0)
   end
   catstats()
+  pptoday(os.time())
+  ppaccuracy(true)
+  labelshow(os.time())
   log('pawbby: no-visit alert after ' .. math.floor(pawbby.gapthr[CAT_NAMES[1]] / 3600 + 0.5) .. ' h ('
       .. CAT_NAMES[1] .. ') / ' .. math.floor(pawbby.gapthr[CAT_NAMES[2]] / 3600 + 0.5) .. ' h ('
       .. CAT_NAMES[2] .. ')')
@@ -1209,6 +1438,7 @@ if prevday ~= today then
     put(CATGA[name].limit, math.floor(pawbby.gapthr[name] / 3600 + 0.5))
   end
   catstats()
+  pptoday(now)
   log('pawbby: new day ' .. today .. ', visit counters reset')
 end
 
@@ -1239,6 +1469,11 @@ if ALERT_EMAIL ~= '' and GMAIL_USER ~= '' and GMAIL_APP_PASS ~= '' then
         or ('FAILED: ' .. tostring((not pok and sok) or serr))))
   end
 end
+
+-- pee / poo labels from the app; work while the box is offline too
+if takecmd(GA.labpee) then labelset('pee', now) end
+if takecmd(GA.labpoo) then labelset('poo', now) end
+if takecmd(GA.labskip) then labelset('skip', now) end
 
 if now >= (pawbby.nexttick or 0) then
   pawbby.nexttick = now + 60
@@ -1303,17 +1538,7 @@ end
 
 ----------------------------------------------------------------- commands ---
 
---[[ KNX command objects. Both are momentary: the script clears them again so
-     the button in the visualisation always sends a fresh true. ]]
-local function takecmd(ga)
-  local obj = grp.find(ga)
-  if obj and obj.value == true then
-    grp.update(ga, false)
-    return true
-  end
-  return false
-end
-
+-- KNX command objects: takecmd() is defined with the phase 4 functions
 if takecmd(GA.flatten) then
   dev:set({ ['106'] = CMDS.flatten })
   log('pawbby: flatten requested via ' .. GA.flatten)
@@ -1369,7 +1594,7 @@ end
 
 if takecmd(GA.testalert) then
   raisealert(1, nil, 'Test alert from the litter box, sent at ' .. os.date('%H:%M') .. '. Nothing is wrong.',
-    'system', 'pawbby: 32/3/34 pressed; system feed, admin phone only')
+    'system', 'pawbby: 32/3/34 pressed; system feed, admin phone only', acode('test', 'time', os.date('%H:%M')))
 end
 
 if takecmd(GA.empty) then
@@ -1460,6 +1685,8 @@ while socket.gettime() < deadline do
           if w then
             pawbby.visit107w = w
             local who = recordcat(w, s, secs)
+            pptoday(now)
+            labelshow(now)
             pawbby.visitwho, pawbby.visitsecs = who ~= 'Unknown' and who or nil, secs
             if who ~= 'Unknown' then
               local cvc = storage.get('pawbby_catvisits')
@@ -1479,7 +1706,8 @@ while socket.gettime() < deadline do
                 raisealert(3, 'acute:' .. who, who .. ' used the litter box ' .. nvis
                   .. ' times today. Frequent trips can mean a urinary problem'
                   .. (sexof(who) == 'male' and ', and in a male cat a blockage is an emergency' or '')
-                  .. '. Please check ' .. who .. ' and consider a vet.')
+                  .. '. Please check ' .. who .. ' and consider a vet.', nil, nil,
+                  acode('cat.many_visits_day', 'cat', who, 'n', nvis, 'sex', sexof(who)))
               end
             end
           else
@@ -1621,7 +1849,8 @@ while socket.gettime() < deadline do
           log('pawbby: NEW dp ' .. key .. ' = ' .. s .. ' [' .. hexdump(s) .. ']')
           alert('PAWBBY new datapoint ' .. key .. ' = ' .. s:sub(1, 60))
           raisealert(2, 'newdp:' .. key, 'The litter box sent an unknown message, possibly a fault.',
-            'system', 'DP ' .. key .. ' = ' .. s:sub(1, 120) .. ' [' .. hexdump(s):sub(1, 100) .. ']')
+            'system', 'DP ' .. key .. ' = ' .. s:sub(1, 120) .. ' [' .. hexdump(s):sub(1, 100) .. ']',
+            acode('box.unknown_dp', 'dp', key))
           put(GA.fault, (key .. ':' .. s):sub(1, 14))
         end
       end

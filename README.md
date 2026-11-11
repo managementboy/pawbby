@@ -68,6 +68,12 @@ shown in words on the Fault object with the manual's advice as the alert
 | 32/3/35 | Waste drawer full (DP 116 `collect_full`) |
 | 32/3/36 | Litter empty (DP 116 `cat_litter_none`) |
 | 32/3/37 | A cat in the box too long (DP 116 `cat_enter_too_long_time`) |
+| 32/3/38 | Pee/poo label queue: visit on show, text ("Isma Wed 04:24 1:52 · guess poo", "None") |
+| 32/3/39 | Its guess: `pee`, `poo`, `unsure`, `-` when none |
+| 32/3/40 | Command: label it pee |
+| 32/3/41 | Command: label it poo |
+| 32/3/42 | Command: skip it (can't tell) |
+| 32/3/43 | Unlabelled visits left in the queue (last 7 days) |
 
 ### Per cat: 32/5/x Isma, 32/6/x Charlie
 
@@ -83,6 +89,13 @@ shown in words on the Fault object with the manual's advice as the alert
 | 8 | Visits per day, 14-day median |
 | 9 | Health text (OK, "No visit 20 h", "Many visits 2h", "wt -6%") |
 | 10 | Health level: 0 OK, 1 watch, 2 urgent |
+| 11 | No-visit alert after (h) |
+| 12 | Pees today (label where given, else the guess) |
+| 13 | Poos today (same) |
+| 14 | Of 12 and 13, how many are guesses |
+| 15 | Visits today guessed "unsure" and not labelled |
+| 16 | Pee/poo labels given so far |
+| 17 | Guess accuracy, % of labels the guess matched (0 until 20 labels) |
 
 ## Records and fast alerts (phase 3)
 
@@ -101,6 +114,30 @@ urgent only), each kind at most every 6 h:
   Box in a busy or lid state for 10 min, or a cat state for 30 min. Box offline
   for 15 min. The daily trend check (weight, no visit, visit spike).
 
+
+## Pee or poo (phase 4)
+
+No camera sees the box, so each counted visit gets a guess from how long the
+cat was inside (DP 107), against that cat's own visit lengths: at or below its
+median `pee`, at or above its 67th percentile `poo`, otherwise `unsure` (and
+`unsure` until a cat has 10 timed visits). Guess and basis are stored on the
+visit (`g`, `gwhy`). The app's admin buttons (32/3/40-42) label the visit shown
+on 32/3/38, oldest first over the last 7 days, then new visits; the label
+(`lab`) is stored with the visit. From 20 labels per cat the script publishes
+how often the guess matched. Thresholds are not tuned automatically yet, and
+the deposit weight is not used (too noisy so far).
+
+## Alert codes
+
+Every alert also carries a stable code for the app's three languages
+(`opts.code` of `alerts.send`), English text as the fallback:
+`cat.no_visit|cat|hours|limit`, `cat.many_visits|cat|n|hours|sex`,
+`cat.many_visits_day|cat|n|sex`, `cat.weight_drop|cat|pct|days`,
+`cat.daily|cat|kind` (`kind` `no_visit`, or `many_visits` with `n|base`),
+`cat.inside_too_long`, `box.offline|min`, `box.stuck|state|min`,
+`box.fault|fault` (the 32/3/15 word), `box.drawer_full`, `box.litter_empty`,
+`box.unknown_dp|dp`, `test|time`. The daily check now sends one alert per
+issue so each has its own code.
 
 Command objects are momentary: write true, the script sends the command and
 resets the object. Clean now is refused (and logged) unless the box is idle

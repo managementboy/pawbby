@@ -407,8 +407,8 @@ cyc[#cyc + 1] = { { ['116'] = 'work_idle' } }
 run(cyc)
 check(objects['32/3/23'] == 1 and objects['32/3/24'] == 125,
   'clean counted with its duration (got ' .. tostring(objects['32/3/23']) .. ', ' .. tostring(objects['32/3/24']) .. ')')
-run({ { { ['114'] = 'roller_ok', ['115'] = 'day_30', ['117'] = 'cu=12 FG=3 BRK=0 PWM=80 POWER=1' } } })
-check(objects['32/3/26'] == 'roller_ok' and objects['32/3/25'] == 'day_30', 'DP 114/115 on their objects')
+run({ { { ['114'] = 'motor_ok', ['115'] = 'day_30', ['117'] = 'cu=12 FG=3 BRK=0 PWM=80 POWER=1' } } })
+check(objects['32/3/26'] == 'motor_ok' and objects['32/3/25'] == 'day_30', 'DP 114/115 on their objects')
 check(objects['32/3/27'] == 'cu=12 FG=3 BRK=0 PWM=80 POWER=1', 'DP 117 motor debug on its object')
 run({ { { ['108'] = 'AQAAEk1HUzEwNDA0MjUwNDE4MDA0NA==' } } })
 check(objects['32/3/28'] == 'MGS104042504180044', 'DP 108 decoded (got ' .. tostring(objects['32/3/28']) .. ')')
@@ -479,8 +479,8 @@ check(objects['32/3/32'] == 1 and objects['32/3/33'] == 1 and objects['32/3/31']
 check(#alerts == na and objects['32/3/34'] == false, 'test alert: no LM alert, button cleared')
 -- 20 h without Isma: watch alert, once
 for i = 1, 20 * 12 do clock = clock + 300; chunk() end
-check(logged('[Watch] Isma has not used the litter box'), 'no-visit alert for Isma')
-check(logged('[Watch] Charlie has not used the litter box') and objects['32/3/33'] == 2, 'and for Charlie, timed from her uncounted visit')
+check(logged('[Watch] (general) Isma has not used the litter box'), 'no-visit alert for Isma')
+check(logged('[Watch] (general) Charlie has not used the litter box') and objects['32/3/33'] == 2, 'and for Charlie, timed from her uncounted visit')
 check(objects['32/5/10'] == 1 and objects['32/5/9'] == 'No visit 20 h', 'Isma health shows the gap')
 check(objects['32/5/11'] == 18 and objects['32/6/11'] == 18, 'alert limit per cat published')
 local gaps = 0
@@ -500,5 +500,40 @@ dev.close = function() end
 for i = 1, 20 * 12 do run({ idle }) end
 check(logged('has been offline for'), 'offline alert after 15 min')
 dev.connected = function() return true end
+
+------------------------------- 14. alerts through the shared library ----
+local sent = {}
+package.preload['user.alerts'] = function()
+  -- _G: this file has a local named alerts (the LM alert() capture)
+  _G.alerts = { send = function(feed, level, source, text, detail)
+    sent[#sent + 1] = { feed = feed, level = level, source = source, text = text, detail = detail }
+    return true
+  end }
+  return _G.alerts
+end
+package.loaded['user.alerts'] = nil
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle', ['114'] = 'motor_ok' } } })
+objects['32/3/34'] = true
+run({ idle })
+run({ { { ['114'] = 'motor_stall' } } })
+local function find(feed, txt)
+  for _, a in ipairs(sent) do if a.feed == feed and a.text:find(txt, 1, true) then return a end end
+end
+local t = find('system', 'Test alert')
+check(t and t.level == 1 and t.source == 'Litter box', 'test alert goes to the system feed (admin phone only)')
+local m = find('system', 'motor problem (motor_stall)')
+check(m and m.level == 2 and m.detail:find('DP 114 = motor_stall', 1, true), 'motor fault to system with detail')
+check(objects['32/3/32'] == nil or objects['32/3/32'] == 0, 'old litter-box feed not written when the library is there')
+-- cat alerts go to general
+store.pawbby_samples = {}
+for _, w in ipairs({ 5300, 5280, 5320 }) do store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0, w = w, src = '107', who = 'Isma' } end
+for _, w in ipairs({ 4100, 4120, 4090 }) do store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0, w = w, src = '107', who = 'Charlie' } end
+for i = 1, 4 do visit(5300 + i * 3) end
+local f = find('general', 'times in the last 2 hours')
+check(f and f.level == 3 and f.source == 'Cats', 'frequent visits go to the general feed as urgent')
+package.preload['user.alerts'] = nil
+package.loaded['user.alerts'] = nil
+_G.alerts = nil
 
 print('ALL CHECKS PASSED')

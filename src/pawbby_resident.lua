@@ -412,8 +412,17 @@ end
      that may repeat (e.g. 'gap:Isma'); it is sent at most every
      ALERT_REPEAT_S. Level 1 (info, e.g. the test) goes to the app only. ]]
 local LEVELTXT = { 'Info', 'Watch', 'Urgent' }
-local function raisealert(level, key, text)
+--[[ Alerts go through the LM's shared alert library (user.alerts, plan item 5,
+     2026-11-11) into the app's feeds: 'general' (every family phone) for the
+     cats, 'system' (Elkin's Pixel only, with a technical detail) for the box and
+     for tests. If the library is missing, the old litter-box feed 32/3/31-33 is
+     written instead, so an alert is never lost. ]]
+local okal = pcall(require, 'user.alerts')
+local HAVE_ALERTS = okal and type(alerts) == 'table' and type(alerts.send) == 'function'
+
+local function raisealert(level, key, text, feed, detail)
   local t = os.time()
+  feed = feed or 'general'
   if key then
     local keys = storage.get('pawbby_alertkeys')
     if type(keys) ~= 'table' then keys = {} end
@@ -424,10 +433,14 @@ local function raisealert(level, key, text)
   end
   local n = (tonumber((storage.get('pawbby_alertno'))) or 0) + 1
   storage.set('pawbby_alertno', n)
-  grp.write(GA.alerttext, text:sub(1, 250))
-  grp.write(GA.alertlevel, level)
-  grp.write(GA.alertno, n)
-  log('pawbby: ALERT #' .. n .. ' [' .. LEVELTXT[level] .. '] ' .. text)
+  if HAVE_ALERTS then
+    alerts.send(feed, level, feed == 'system' and 'Litter box' or 'Cats', text, detail)
+  else
+    grp.write(GA.alerttext, text:sub(1, 250))
+    grp.write(GA.alertlevel, level)
+    grp.write(GA.alertno, n)
+  end
+  log('pawbby: ALERT #' .. n .. ' [' .. LEVELTXT[level] .. '] (' .. feed .. ') ' .. text)
   if level >= 2 then
     alert('PAWBBY ' .. LEVELTXT[level] .. ': ' .. text)
     queue_email('PAWBBY ' .. LEVELTXT[level] .. ': ' .. text:sub(1, 60),
@@ -778,12 +791,16 @@ local function minutetick(t)
              or ((BUSY_STATES[st] or LID_STATES[st]) and STUCK_S)
     if lim and t - since > lim then
       raisealert(2, 'stuck:' .. st, 'The litter box has been in state ' .. st .. ' for '
-        .. math.floor((t - since) / 60) .. ' minutes. Check that it is not jammed.')
+        .. math.floor((t - since) / 60) .. ' minutes. Check that it is not jammed.', 'system',
+        'DP 116 = ' .. st .. ' since ' .. os.date('%H:%M', since) .. '; DP 114 = '
+        .. tostring(pawbby.last['114']) .. '; DP 117 = ' .. tostring(pawbby.last['117']))
     end
   end
   if pawbby.offsince and t - pawbby.offsince > OFFLINE_S then
     raisealert(2, 'offline', 'The litter box has been offline for '
-      .. math.floor((t - pawbby.offsince) / 60) .. ' minutes.')
+      .. math.floor((t - pawbby.offsince) / 60) .. ' minutes.', 'system',
+      'no Tuya session to ' .. CFG.ip .. ':6668 since ' .. os.date('%H:%M', pawbby.offsince)
+      .. '; last error: ' .. tostring(pawbby.lasterr))
   end
   cathealth(t)
 end
@@ -1101,6 +1118,7 @@ if not dev:connected() then
       put(GA.online, true)
     else
       log('pawbby: ' .. tostring(err))
+      pawbby.lasterr = tostring(err)
       pawbby.nextretry = now + 15
     end
   end
@@ -1202,7 +1220,8 @@ if takecmd(GA.tare) then
 end
 
 if takecmd(GA.testalert) then
-  raisealert(1, nil, 'Test alert from the litter box, sent at ' .. os.date('%H:%M') .. '. Nothing is wrong.')
+  raisealert(1, nil, 'Test alert from the litter box, sent at ' .. os.date('%H:%M') .. '. Nothing is wrong.',
+    'system', 'pawbby: 32/3/34 pressed; system feed, admin phone only')
 end
 
 if takecmd(GA.empty) then
@@ -1399,6 +1418,11 @@ while socket.gettime() < deadline do
         elseif key == '114' then
           put(GA.motor, s:sub(1, 14))
           log('pawbby: dp 114 (motor) = ' .. s)
+          if s ~= 'motor_ok' then
+            raisealert(2, 'motor:' .. s, 'The litter box reports a motor problem (' .. s .. ').',
+              'system', 'DP 114 = ' .. s .. '; DP 116 = ' .. tostring(pawbby.last['116'])
+              .. '; DP 117 = ' .. tostring(pawbby.last['117']))
+          end
 
         elseif key == '115' then
           put(GA.deodorant, s:sub(1, 14))
@@ -1429,6 +1453,8 @@ while socket.gettime() < deadline do
                produced no state change), so this is how we catch it. ]]
           log('pawbby: NEW dp ' .. key .. ' = ' .. s .. ' [' .. hexdump(s) .. ']')
           alert('PAWBBY new datapoint ' .. key .. ' = ' .. s:sub(1, 60))
+          raisealert(2, 'newdp:' .. key, 'The litter box sent an unknown message, possibly a fault.',
+            'system', 'DP ' .. key .. ' = ' .. s:sub(1, 120) .. ' [' .. hexdump(s):sub(1, 100) .. ']')
           put(GA.fault, (key .. ':' .. s):sub(1, 14))
         end
       end

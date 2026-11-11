@@ -22,4 +22,10 @@ else
   mode=staged
 fi
 
-exec python tools/check_secrets.py "$mode" </dev/null
+# Prefer python3; fall back to python. Machines in this project have one or
+# the other on PATH, not always both.
+py=$(command -v python3 || command -v python) || {
+  echo "check-secrets: no python interpreter found" >&2
+  exit 1
+}
+exec "$py" tools/check_secrets.py "$mode" </dev/null

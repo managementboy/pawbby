@@ -680,7 +680,8 @@ end
 check(pawbby.labt == first.t, 'oldest visit of the last 7 days on show')
 check(objects['32/3/43'] == 22, 'labels left (got ' .. tostring(objects['32/3/43']) .. ')')
 local txt = objects['32/3/38']
-check(txt:find('^' .. first.who .. ' %a%a%a %d%d:%d%d 0:%d%d · guess %a+$') ~= nil, 'label text (got ' .. txt .. ')')
+check(txt:find('^' .. first.who .. ' %a%a%a %d%d? %a%a%a %d%d:%d%d 0:%d%d · guess %a+$') ~= nil, 'label text (got ' .. txt .. ')')
+check(objects['32/3/44'] == 0 and objects['32/3/45'] == 0, 'no record behind a backfilled visit: tray weights 0')
 check(objects['32/3/39'] == first.g and first.gwhy:find('p50') ~= nil, 'guess shown, basis stored')
 objects['32/3/40'] = true
 run({ idle })
@@ -699,8 +700,15 @@ check(today.who == 'Isma' and today.g == 'pee' and today.gwhy == '11 s; Isma p50
   'new visit guessed at once (got ' .. tostring(today.gwhy) .. ')')
 local vl = store.pawbby_visitlog
 check(vl[#vl].g ~= nil and vl[#vl].gwhy ~= nil, 'guess written into the visit record')
+-- the new visits have records with the tray weights: show one in the queue
+for _, x in ipairs(store.pawbby_samples) do if x ~= today and not x.lab then x.lab = 'skip' end end
+run({ idle, idle, idle, idle, idle, idle, idle, idle, idle, idle, idle, idle })   -- next minute tick
+check(pawbby.labt == today.t, 'today\'s visit on show')
+check(objects['32/3/44'] == 2342 and objects['32/3/45'] == 2342,
+  'tray before/after of the visit on show (got ' .. tostring(objects['32/3/44']) .. '/' .. tostring(objects['32/3/45']) .. ')')
+check(objects['32/3/38']:find(' · guess pee$') and objects['32/3/38']:find('^Isma %a%a%a %d%d? %a%a%a '),
+  'dated label text (got ' .. objects['32/3/38'] .. ')')
 -- label today's last Isma visit poo: counts move from guess to label
-pawbby.labt = today.t
 objects['32/3/41'] = true
 run({ idle })
 check(today.lab == 'poo' and objects['32/5/13'] == 1 and objects['32/5/12'] == 2 and objects['32/5/14'] == 2,

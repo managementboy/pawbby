@@ -68,12 +68,14 @@ shown in words on the Fault object with the manual's advice as the alert
 | 32/3/35 | Waste drawer full (DP 116 `collect_full`) |
 | 32/3/36 | Litter empty (DP 116 `cat_litter_none`) |
 | 32/3/37 | A cat in the box too long (DP 116 `cat_enter_too_long_time`) |
-| 32/3/38 | Pee/poo label queue: visit on show, text ("Isma Wed 04:24 1:52 · guess poo", "None") |
+| 32/3/38 | Pee/poo label queue: visit on show, text ("Isma Wed 4 Nov 12:19 0:11 · guess pee", "None") |
 | 32/3/39 | Its guess: `pee`, `poo`, `unsure`, `-` when none |
 | 32/3/40 | Command: label it pee |
 | 32/3/41 | Command: label it poo |
 | 32/3/42 | Command: skip it (can't tell) |
 | 32/3/43 | Unlabelled visits left in the queue (last 7 days) |
+| 32/3/44 | That visit: tray weight before the cat went in, g (0 = no record; records from 11 Nov) |
+| 32/3/45 | That visit: tray weight after the cat left, g (0 = no record) |
 
 ### Per cat: 32/5/x Isma, 32/6/x Charlie
 

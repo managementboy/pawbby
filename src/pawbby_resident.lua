@@ -137,6 +137,8 @@ local GA = {
   labpoo     = '32/3/41',  -- command: label it poo                   (1    bool)
   labskip    = '32/3/42',  -- command: skip it (can't tell)           (1    bool)
   lableft    = '32/3/43',  -- unlabelled visits in the queue          (7    uint16)
+  labwb      = '32/3/44',  -- that visit: tray weight before, g; 0 = no record (7 uint16)
+  labwa      = '32/3/45',  -- that visit: tray weight after, g; 0 = no record  (7 uint16)
 }
 
 local CAT_KG     = { GA.cat1kg, GA.cat2kg }
@@ -185,6 +187,8 @@ local OBJECTS = {
   { ga = GA.labpoo,   dt = 1,   name = 'Pawbby Label Poo' },
   { ga = GA.labskip,  dt = 1,   name = 'Pawbby Label Skip' },
   { ga = GA.lableft,  dt = 7,   name = 'Pawbby Labels Left' },
+  { ga = GA.labwb,    dt = 7,   name = 'Pawbby Label Tray Before', units = 'g' },
+  { ga = GA.labwa,    dt = 7,   name = 'Pawbby Label Tray After', units = 'g' },
 }
 
 --[[ One block of objects per cat (phase 3): 32/5/x Isma, 32/6/x Charlie.
@@ -1056,6 +1060,21 @@ local function ppaccuracy(logit)
   end
 end
 
+-- the pawbby_visitlog record of a sample (DP 107 arrives inside the window)
+local function recof(vl, x)
+  if type(vl) ~= 'table' then return nil end
+  for i = #vl, 1, -1 do
+    local r = vl[i]
+    if r.w == x.w and r.t0 and r.t0 - 60 <= x.t and x.t <= (r.t1 or r.t0) + 120 then return r end
+  end
+end
+
+-- grams for a DPT 7 object: 0..65535, 0 also meaning "no value"
+local function g16(v)
+  if type(v) ~= 'number' then return 0 end
+  return math.min(math.max(math.floor(v + 0.5), 0), 65535)
+end
+
 -- the oldest unlabelled counted visit of the last LABEL_DAYS, for the app
 local function labelshow(t)
   local samples = samplesof()
@@ -1073,12 +1092,17 @@ local function labelshow(t)
       storage.set('pawbby_samples', samples)
     end
     local sec = secsof(cur)
-    text = cur.who .. ' ' .. os.date('%a %H:%M', cur.t) .. ' '
+    -- "Wed 4 Nov 12:19": the queue spans 7 days, so a weekday alone repeats
+    text = cur.who .. ' ' .. os.date('%a ', cur.t) .. tonumber(os.date('%d', cur.t))
+      .. os.date(' %b %H:%M', cur.t) .. ' '
       .. (sec and string.format('%d:%02d', math.floor(sec / 60), sec % 60) or '?')
       .. ' · guess ' .. cur.g
     g = cur.g
   end
   pawbby.labt = cur and cur.t
+  local r = cur and recof(storage.get('pawbby_visitlog'), cur)
+  put(GA.labwb, g16(r and r.wb))
+  put(GA.labwa, g16(r and r.wa))
   put(GA.labtext, text)
   put(GA.labguess, g)
   put(GA.lableft, left)
@@ -1098,15 +1122,10 @@ local function labelset(lab, t)
   x.lab, x.labt = lab, t
   storage.set('pawbby_samples', samples)
   local vl = storage.get('pawbby_visitlog')
-  if type(vl) == 'table' then
-    for i = #vl, 1, -1 do
-      local r = vl[i]
-      if r.w == x.w and r.t0 and r.t0 - 60 <= x.t and x.t <= (r.t1 or r.t0) + 120 then
-        r.lab, r.g, r.gwhy = lab, r.g or x.g, r.gwhy or x.gwhy
-        storage.set('pawbby_visitlog', vl)
-        break
-      end
-    end
+  local r = recof(vl, x)
+  if r then
+    r.lab, r.g, r.gwhy = lab, r.g or x.g, r.gwhy or x.gwhy
+    storage.set('pawbby_visitlog', vl)
   end
   log('pawbby: label ' .. x.who .. ' ' .. os.date('%Y-%m-%d %H:%M', x.t) .. ' = ' .. lab
     .. ' (guess ' .. tostring(x.g) .. ': ' .. tostring(x.gwhy) .. ')')
@@ -1181,6 +1200,7 @@ end
        t0, t1  window start (cat seen) and cat gone     cat   name (counted)
        w, s    box weighing and seconds (DP 107)         peak  scale delta, g
        dep     tray weight after leaving minus before entry, g (deposit, noisy)
+       wb, wa  tray weight before entry and after leaving, g (records from 11 Nov)
        est     cat guessed from the peak, uncounted visits only
        clean, wclean  the clean that followed: seconds, tray weight after ]]
 local function logvisit(rec)
@@ -1231,6 +1251,8 @@ local function finishvisit()
     t0 = pawbby.vstart, t1 = pawbby.vend, cat = pawbby.visitwho,
     w = pawbby.visit107w, s = pawbby.visitsecs, peak = d,
     dep = (pawbby.w and pawbby.wbase) and math.floor(pawbby.w - pawbby.wbase + 0.5) or nil,
+    wb = pawbby.wbase and math.floor(pawbby.wbase + 0.5) or nil,   -- tray before, g (since 11 Nov)
+    wa = pawbby.w and math.floor(pawbby.w + 0.5) or nil,           -- tray after, g
     lid = pawbby.lidseen or nil,
     g = pawbby.visit107w and pawbby.visitg or nil,
     gwhy = pawbby.visit107w and pawbby.visitgwhy or nil,

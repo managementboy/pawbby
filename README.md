@@ -10,8 +10,8 @@ and this does not depend on it.
 ## Status
 
 Working: local connection, full state read, weight, visit counting, litter
-level, flatten, **clean now** and tare commands, Mosaic tiles in the entrance
-room.
+level, flatten, **clean now** and tare commands, Centralita Cats page (Mosaic retired 2026-11-11; it was: Mosaic tiles in the entrance
+room).
 
 Built, waiting for real visits: per-cat weight and visits (Isma, Charlie),
 learned automatically from the box's own visit weighing (DP 107). Names

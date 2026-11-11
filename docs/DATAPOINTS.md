@@ -252,9 +252,13 @@ Counts over 7 days: `cat_near` and `cat_near_leave` 205 each, `work_idle`
 `power_off`. Never seen: `collect_full`, `toilet_much/little`,
 `work_update`, `dev_reset*`, `power_on`.
 
-## Proposed LM objects and commands (not built)
+## Proposed LM objects and commands
 
-Read-only first; nothing here moves the drum.
+Read-only first; nothing here moves the drum. Items 1-3 were built on
+2026-11-11 (objects 32/3/35-37, alert texts from `docs/HELP.md`); a drum or
+unknown DP 102 fault alerts after 15 min, other DP 114 `*_err` at once.
+DP 116 flags (`collect_*`, `toilet_*`, `cat_litter_*`, `cat_enter_*_time`)
+no longer change the state text or presence. Items 4-7 are open.
 
 1. **Fault from DP 102** (low risk). Stop treating 102 as trace. Any
    non-zero data byte: write a short text to `32/3/15` (byte 12 ->

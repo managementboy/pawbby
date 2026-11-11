@@ -101,7 +101,7 @@ local GA = {
   catkg    = '32/3/9',    -- last measured cat weight in grams  (9.x  2 byte float)
   litterlow = '32/3/13',  -- box reports litter running low      (1    bool)
   catname  = '32/3/14',   -- which cat the last visit matched    (16   string)
-  fault    = '32/3/15',   -- last fault reported by the box      (16   string)
+  fault    = '32/3/15',   -- active fault in words (DP 102 / 114), 'None' (16 string)
   cat1kg   = '32/3/16',   -- CAT_NAMES[1] weight at their last visit (9.x)
   cat2kg   = '32/3/17',   -- CAT_NAMES[2] weight at their last visit (9.x)
   cat1visits = '32/3/18', -- CAT_NAMES[1] visits today           (5    uint8)
@@ -126,6 +126,10 @@ local GA = {
   alertno    = '32/3/32',  -- alert number, +1 per alert          (7    uint16)
   alertlevel = '32/3/33',  -- 1 info, 2 watch, 3 urgent           (5    uint8)
   testalert  = '32/3/34',  -- command: send a test alert          (1    bool)
+  -- states from the Tuya data model (2026-11-11)
+  drawerfull = '32/3/35',  -- waste drawer full, DP 116 collect_full  (1   bool)
+  litterout  = '32/3/36',  -- no litter, DP 116 cat_litter_none        (1   bool)
+  cattoolong = '32/3/37',  -- a cat in the box too long, DP 116        (1   bool)
 }
 
 local CAT_KG     = { GA.cat1kg, GA.cat2kg }
@@ -165,6 +169,9 @@ local OBJECTS = {
   { ga = GA.alertno,    dt = 7,   name = 'Pawbby Alert Number' },
   { ga = GA.alertlevel, dt = 5,   name = 'Pawbby Alert Level' },
   { ga = GA.testalert,  dt = 1,   name = 'Pawbby Test Alert' },
+  { ga = GA.drawerfull, dt = 1,   name = 'Pawbby Waste Drawer Full' },
+  { ga = GA.litterout,  dt = 1,   name = 'Pawbby Litter Empty' },
+  { ga = GA.cattoolong, dt = 1,   name = 'Pawbby Cat Inside Too Long' },
 }
 
 --[[ One block of objects per cat (phase 3): 32/5/x Isma, 32/6/x Charlie.
@@ -261,18 +268,63 @@ local CAT_STATES = {
      and gets logged once so it can be mapped -- that is how the fault code DP
      will be caught, since it only broadcasts when something is wrong. ]]
 local KNOWN_DP = {
-  ['101'] = true, ['103'] = true, ['106'] = true, ['107'] = true,
+  ['101'] = true, ['102'] = true, ['103'] = true, ['106'] = true, ['107'] = true,
   ['111'] = true, ['112'] = true, ['113'] = true, ['114'] = true,
   ['115'] = true, ['116'] = true, ['117'] = true,
 }
 
 --[[ Seen but not decoded. They are normal traffic, not faults: 109/110 are
-     the tare echo and calibration result, 102 is the clean-cycle result the
-     box sends when a clean finishes (seen here after an auto clean,
-     Pawbby-Reborn saw it after manual cleans). Logged with their bytes so they can be decoded, but they must not
-     raise an alert or land in the Fault object. ]]
+     the tare echo and calibration result, 108 the model and serial. Logged
+     with their bytes, but they must not raise an alert or land in the Fault
+     object. (102 used to be here as a "clean result"; the Tuya data model
+     names it fault_code, see FAULT below.) ]]
 local TRACE_DP = {
-  ['102'] = true, ['108'] = true, ['109'] = true, ['110'] = true,
+  ['108'] = true, ['109'] = true, ['110'] = true,
+}
+
+--[[ Faults, from the Tuya data model and the manual (docs/HELP.md).
+     DP 102 fault_code is 01 00 00 0b + 11 bytes, all zero = no fault; it
+     comes after every clean, so zero is normal. Only payload byte 12 has
+     been seen set: drum out, together with DP 114 roller_uninstall_err.
+     DP 114 reports one *_err / *_ok per part. Words go to 32/3/15 (DPT 16,
+     14 characters at most); the alert text is the manual's advice. ]]
+local FAULT_S = 900   -- drum out / litter empty this long before alerting
+local W01 = "The drum doesn't turn, or turns stiffly (box code W01). Take the drum out, "
+  .. 'clean it and the area around the motor gear, put it back, and unplug the box for 3 seconds.'
+local DRUM = "The litter box drum isn't seated. Put it back and rock it left and right: "
+  .. "it's seated when it no longer rolls."
+local function partfailed(what)
+  return 'A part of the litter box has failed (' .. what .. '; the display shows an E code). '
+    .. 'Contact PAWBBY support; there is nothing to fix at home.'
+end
+local FAULT114 = {
+  block_err             = { 'Drum stuck', W01 },
+  motor_err             = { 'Motor fault', W01 },
+  roller_overweight_err = { 'Drum overload', 'The drum is overweight (box code W03). Calibrate the '
+    .. 'scale: menu "Empty cat litter", and wait until the drum is empty and back at its start position.' },
+  roller_uninstall_err  = { 'Drum out', DRUM, true },
+  roller_install_err    = { 'Drum not set', DRUM, true },
+  sensor_weight_err     = { 'Scale fault', partfailed('weight sensor') },
+  door_pir_err          = { 'Entry sensor', partfailed('entrance sensor') },
+  biology_err           = { 'Cat sensor', partfailed('cat sensor') },
+  collect_pir_err       = { 'Bin sensor', partfailed('waste drawer sensor') },
+  door_air_err          = { 'Door sensor', partfailed('door sensor') },
+  flash_err             = { 'Memory fault', partfailed('memory') },
+  dump_err              = { 'Dump fault', partfailed('emptying mechanism') },
+}
+-- [3] = true: seen while someone services the box, so wait FAULT_S first
+local FAULT102 = { [12] = { 'Drum out', DRUM, true } }
+
+--[[ DP 116 values that are flags, not states of the machine. They arrive in
+     the middle of a visit or a clean (cat_enter_too_long_time while the cat
+     is inside), so they must not touch 32/3/2, presence or the stuck timer;
+     before 2026-11-11 a litter flag mid-visit would have closed the visit. ]]
+local FLAG_STATES = {
+  collect_full = true, collect_normal = true,
+  collect_install = true, collect_uninstall = true,
+  toilet_much = true, toilet_little = true,
+  cat_litter_little = true, cat_litter_enough = true, cat_litter_none = true,
+  cat_enter_too_long_time = true, cat_enter_time_normal = true,
 }
 
 -- base64 DP payload -> "01 00 00 05" for the log, raw value if not base64
@@ -447,6 +499,81 @@ local function raisealert(level, key, text, feed, detail)
       text .. '\n\nAutomated message from the litter box, not a diagnosis.')
   end
   return true
+end
+
+--[[ The fault picture. pawbby.f102 / pawbby.f114 hold the FAULT102 /
+     FAULT114 entry each DP reports, or nil. DP 114 names the part, so it
+     wins over a bare DP 102 byte. A fault seen while the box is serviced
+     (entry [3]) alerts from minutetick once it has lasted FAULT_S; the
+     others alert at once. ]]
+local function setfault(now, detail)
+  local f = pawbby.f114 or pawbby.f102
+  put(GA.fault, f and f[1] or 'None')
+  if not f then
+    if pawbby.fault then log('pawbby: fault cleared (' .. pawbby.fault[1] .. ')') end
+    pawbby.fault, pawbby.faultsince = nil, nil
+    return
+  end
+  if not pawbby.fault or pawbby.fault[1] ~= f[1] then
+    pawbby.fault, pawbby.faultsince = f, now
+    log('pawbby: FAULT ' .. f[1] .. ' (' .. detail .. ')')
+  end
+  pawbby.faultdetail = detail
+  if not f[3] then raisealert(2, 'fault:' .. f[1], f[2], 'system', detail) end
+end
+
+-- DP 102: 01 00 00 0b + 11 fault bytes. All zero clears every fault, DP 114
+-- ones included: it is the box's own summary and comes after every clean.
+local function fault102(s, now)
+  local okd, raw = pcall(encdec.base64dec, s)
+  if not okd or type(raw) ~= 'string' or #raw < 5 then
+    log('pawbby: dp 102 not decoded: ' .. s)
+    return
+  end
+  local f
+  for i = 5, #raw do
+    if raw:byte(i) ~= 0 then
+      local o = i - 1   -- payload offset, as in DATAPOINTS.md
+      f = FAULT102[o] or { 'Fault byte ' .. o, 'The litter box reports a fault (code byte ' .. o
+        .. '). Check its display for a W or E code.', true }
+      break
+    end
+  end
+  pawbby.f102 = f
+  if not f then pawbby.f114, pawbby.f114part = nil, nil end
+  setfault(now, 'DP 102 = ' .. s .. ' [' .. hexdump(s) .. ']; DP 114 = ' .. tostring(pawbby.last['114']))
+end
+
+--[[ DP 116 flags (FLAG_STATES): their own objects and alerts. A cat "in too
+     long" right after the lid was handled or with a fault active is a person
+     servicing the box (9 Nov: lid open, litter refilled), not a cat. ]]
+local function flagstate(s, now)
+  log('pawbby: flag ' .. s)
+  if s == 'collect_full' then
+    put(GA.drawerfull, true)
+    raisealert(2, 'drawerfull', 'The waste drawer is full. Empty it and put in a new bag.',
+      'system', 'DP 116 = collect_full')
+  elseif s == 'collect_normal' then
+    put(GA.drawerfull, false)
+  elseif s == 'cat_litter_none' then
+    put(GA.litterout, true)
+    put(GA.litterlow, true)
+    pawbby.emptysince = pawbby.emptysince or now
+  elseif s == 'cat_litter_little' or s == 'cat_litter_enough' then
+    put(GA.litterout, false)
+    put(GA.litterlow, s == 'cat_litter_little')
+    pawbby.emptysince = nil
+  elseif s == 'cat_enter_too_long_time' then
+    put(GA.cattoolong, true)
+    if (pawbby.lidt and now - pawbby.lidt < 1800) or pawbby.fault then
+      log('pawbby: cat too long ignored, box being serviced')
+    else
+      raisealert(2, 'toolong', 'A cat has stayed in the litter box unusually long. Please check the cat.',
+        'general', 'DP 116 = cat_enter_too_long_time; state ' .. tostring(pawbby.last['116']))
+    end
+  elseif s == 'cat_enter_time_normal' then
+    put(GA.cattoolong, false)
+  end
 end
 
 --[[ Send one email straight to Gmail's SMTP over implicit SSL (port 465) with
@@ -796,6 +923,16 @@ local function minutetick(t)
         .. tostring(pawbby.last['114']) .. '; DP 117 = ' .. tostring(pawbby.last['117']))
     end
   end
+  local f = pawbby.fault
+  if f and f[3] and pawbby.faultsince and t - pawbby.faultsince >= FAULT_S then
+    raisealert(2, 'fault:' .. f[1], f[2], 'system', tostring(pawbby.faultdetail)
+      .. '; since ' .. os.date('%H:%M', pawbby.faultsince))
+  end
+  if pawbby.emptysince and t - pawbby.emptysince >= FAULT_S then
+    raisealert(2, 'litterout', 'The litter box has no litter. Add clumping litter (grains under 2 mm) '
+      .. 'up to the MAX mark, then press Flatten.', 'system',
+      'DP 116 = cat_litter_none since ' .. os.date('%H:%M', pawbby.emptysince))
+  end
   if pawbby.offsince and t - pawbby.offsince > OFFLINE_S then
     raisealert(2, 'offline', 'The litter box has been offline for '
       .. math.floor((t - pawbby.offsince) / 60) .. ' minutes.', 'system',
@@ -986,7 +1123,7 @@ if not pawbby then
   -- no value).
   local f = grp.getvalue(GA.fault)
   local dp = type(f) == 'string' and f:match('^(%d+):') or nil
-  if f == '' or (dp and TRACE_DP[dp]) then
+  if f == '' or (dp and (TRACE_DP[dp] or dp == '102')) then
     grp.write(GA.fault, 'None')
     log('pawbby: cleared stale fault "' .. f .. '"')
   end
@@ -1268,9 +1405,11 @@ local STATE_TEXT = {
   work_empty     = 'Emptying',
   lid_open       = 'Lid open',
   lid_close      = 'Lid closed',
-  cat_litter_little = 'Litter low',
-  cat_litter_enough = 'Litter OK',
   roller_uninstall_ok = 'Drum removed',
+  work_init      = 'Starting',
+  work_update    = 'Updating',
+  power_off      = 'Power off',
+  power_on       = 'Power on',
 }
 
 --[[ Event loop: the resident runs with sleep 0, and each pass waits on the
@@ -1337,7 +1476,14 @@ while socket.gettime() < deadline do
           end
         end
 
+      --[[ DP 102 bypasses the change filter too: an all-zero report after a
+           clean must clear a DP 114 fault even when the last 102 was zero. ]]
+      elseif key == '102' then
+        pawbby.last[key] = s
+        fault102(s, now)
+
       elseif pawbby.last[key] ~= s then
+        local prev = pawbby.last[key]
         pawbby.last[key] = s
 
         if key == '112' then
@@ -1349,6 +1495,11 @@ while socket.gettime() < deadline do
             -- trace until the capture is confirmed on real visits
             log('pawbby: visit weight ' .. w)
           end
+
+        elseif key == '116' and FLAG_STATES[s] then
+          -- keep the machine state for presence and the stuck timer
+          pawbby.last[key] = prev
+          flagstate(s, now)
 
         elseif key == '116' then
           pawbby.statesince = now
@@ -1384,12 +1535,8 @@ while socket.gettime() < deadline do
             end
           end
 
-          -- litter level, reported as a state pair
-          if s == 'cat_litter_little' then put(GA.litterlow, true) end
-          if s:find('cat_litter_eno') then put(GA.litterlow, false) end
-
           -- any lid activity invalidates a measurement in progress
-          if LID_STATES[s] then pawbby.lidseen = true end
+          if LID_STATES[s] then pawbby.lidseen, pawbby.lidt = true, now end
 
           --[[ Visit weight capture. The tray reading (DP 112) rises while a
                cat stands in the box, so peak minus the baseline taken just
@@ -1416,12 +1563,21 @@ while socket.gettime() < deadline do
           end
 
         elseif key == '114' then
+          --[[ One check result per report: *_err, *_ok or deodorant_reset.
+               Only *_err is a fault; the matching *_ok clears it (motor_ok
+               does not clear a drum fault). ]]
           put(GA.motor, s:sub(1, 14))
-          log('pawbby: dp 114 (motor) = ' .. s)
-          if s ~= 'motor_ok' then
-            raisealert(2, 'motor:' .. s, 'The litter box reports a motor problem (' .. s .. ').',
-              'system', 'DP 114 = ' .. s .. '; DP 116 = ' .. tostring(pawbby.last['116'])
-              .. '; DP 117 = ' .. tostring(pawbby.last['117']))
+          log('pawbby: dp 114 = ' .. s)
+          local part = s:match('^(.+)_err$')
+          if part then
+            pawbby.f114 = FAULT114[s] or { s:sub(1, 14), partfailed(s) }
+            pawbby.f114part = part
+          elseif pawbby.f114part and s == pawbby.f114part .. '_ok' then
+            pawbby.f114, pawbby.f114part = nil, nil
+          end
+          if part or not pawbby.f114 then
+            setfault(now, 'DP 114 = ' .. s .. '; DP 102 = ' .. tostring(pawbby.last['102'])
+              .. '; DP 116 = ' .. tostring(pawbby.last['116']) .. '; DP 117 = ' .. tostring(pawbby.last['117']))
           end
 
         elseif key == '115' then

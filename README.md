@@ -17,8 +17,9 @@ Built, waiting for real visits: per-cat weight and visits (Isma, Charlie),
 learned automatically from the box's own visit weighing (DP 107). Names
 appear after 6 weighed visits and only once the weights form two clusters.
 
-Fault DP found (2026-11-11): DP 102 `fault_code`, from the Tuya data model;
-not yet wired to the Fault object. See `docs/DATAPOINTS.md`.
+Faults (2026-11-11): DP 102 `fault_code` and DP 114, from the Tuya data model,
+shown in words on the Fault object with the manual's advice as the alert
+(`docs/HELP.md`). See `docs/DATAPOINTS.md`.
 
 ## Layout
 
@@ -44,7 +45,7 @@ not yet wired to the Fault object. See `docs/DATAPOINTS.md`.
 | 32/3/12 | Command: clean now |
 | 32/3/13 | Litter low |
 | 32/3/14 | Cat name (last visit) |
-| 32/3/15 | Fault |
+| 32/3/15 | Fault in words ("Drum out", "Drum stuck", ...), "None" when clear (DP 102 / 114) |
 | 32/3/16 | Isma weight (g, last visit) |
 | 32/3/17 | Charlie weight (g, last visit) |
 | 32/3/18 | Isma visits today |
@@ -64,6 +65,9 @@ not yet wired to the Fault object. See `docs/DATAPOINTS.md`.
 | 32/3/32 | Alert number, +1 per alert, written last |
 | 32/3/33 | Alert level: 1 info, 2 watch, 3 urgent |
 | 32/3/34 | Command: test alert (info, app only) |
+| 32/3/35 | Waste drawer full (DP 116 `collect_full`) |
+| 32/3/36 | Litter empty (DP 116 `cat_litter_none`) |
+| 32/3/37 | A cat in the box too long (DP 116 `cat_enter_too_long_time`) |
 
 ### Per cat: 32/5/x Isma, 32/6/x Charlie
 

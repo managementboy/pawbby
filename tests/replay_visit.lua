@@ -516,14 +516,15 @@ world()
 run({ { { ['112'] = 2342, ['116'] = 'work_idle', ['114'] = 'motor_ok' } } })
 objects['32/3/34'] = true
 run({ idle })
-run({ { { ['114'] = 'motor_stall' } } })
+run({ { { ['114'] = 'motor_err' } } })
 local function find(feed, txt)
   for _, a in ipairs(sent) do if a.feed == feed and a.text:find(txt, 1, true) then return a end end
 end
 local t = find('system', 'Test alert')
 check(t and t.level == 1 and t.source == 'Litter box', 'test alert goes to the system feed (admin phone only)')
-local m = find('system', 'motor problem (motor_stall)')
-check(m and m.level == 2 and m.detail:find('DP 114 = motor_stall', 1, true), 'motor fault to system with detail')
+local m = find('system', "The drum doesn't turn")
+check(m and m.level == 2 and m.detail:find('DP 114 = motor_err', 1, true), 'motor fault to system with detail')
+check(objects['32/3/15'] == 'Motor fault', 'motor fault in words on Fault')
 check(objects['32/3/32'] == nil or objects['32/3/32'] == 0, 'old litter-box feed not written when the library is there')
 -- cat alerts go to general
 store.pawbby_samples = {}
@@ -535,5 +536,79 @@ check(f and f.level == 3 and f.source == 'Cats', 'frequent visits go to the gene
 package.preload['user.alerts'] = nil
 package.loaded['user.alerts'] = nil
 _G.alerts = nil
+
+--------------------------- 15. faults and flags from the Tuya data model --
+local function alerted(txt)
+  for _, a in ipairs(alerts) do if a:find(txt, 1, true) then return true end end
+end
+local function wait(s) for _ = 1, s / 5 do run({ idle }) end end
+local DRUMOUT = b64enc(string.char(1, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0))
+local NOFAULT = 'AQAACwAAAAAAAAAAAAAA'
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle', ['114'] = 'motor_ok', ['102'] = NOFAULT } } })
+check(objects['32/3/35'] == false and objects['32/3/36'] == false and objects['32/3/37'] == false,
+  'new flag objects created as false')
+check(objects['32/3/15'] == 'None' and #alerts == 0, 'all-zero DP 102 is no fault')
+-- the 7 Nov service: lid open, drum out, back after 30 min: no alert before 15 min
+run({ { { ['116'] = 'lid_open' } }, { { ['102'] = DRUMOUT, ['114'] = 'roller_uninstall_err' } } })
+check(objects['32/3/15'] == 'Drum out', 'drum out in words (got ' .. tostring(objects['32/3/15']) .. ')')
+check(#alerts == 0, 'no drum alert at once')
+run({ { { ['114'] = 'motor_ok' } } })
+check(objects['32/3/15'] == 'Drum out', 'motor_ok does not clear a drum fault')
+wait(10 * 60)
+check(not alerted("drum isn't seated"), 'no drum alert after 10 min')
+wait(6 * 60)
+check(alerted("drum isn't seated"), 'drum alert after 15 min')
+run({ { { ['114'] = 'roller_uninstall_ok' } }, { { ['102'] = NOFAULT } }, { { ['116'] = 'lid_close' } } })
+check(objects['32/3/15'] == 'None', 'drum back: fault cleared')
+local n = #alerts
+run({ { { ['114'] = 'deodorant_reset' } }, { { ['114'] = 'roller_uninstall_ok' } } })
+check(#alerts == n, 'no alert on *_ok or deodorant_reset')
+-- a jam alerts at once, with the manual's advice
+run({ { { ['114'] = 'block_err' } } })
+check(objects['32/3/15'] == 'Drum stuck' and alerted('box code W01'), 'jam: words and W01 alert at once')
+run({ { { ['102'] = NOFAULT } } })
+check(objects['32/3/15'] == 'None', 'all-zero DP 102 clears a DP 114 fault')
+-- an unknown DP 102 byte waits too, then alerts with the byte
+run({ { { ['102'] = b64enc(string.char(1, 0, 0, 11, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0)) } } })
+check(objects['32/3/15'] == 'Fault byte 6', 'unknown fault byte named (got ' .. tostring(objects['32/3/15']) .. ')')
+wait(16 * 60)
+check(alerted('code byte 6'), 'unknown fault byte alerts after 15 min')
+run({ { { ['102'] = NOFAULT } } })
+-- cat in too long, mid-visit: a flag, not a state; the visit stays open
+clock = clock + 3600   -- lid handling above is over 30 min ago
+run({ { { ['116'] = 'cat_enter' } }, { { ['112'] = 6600 } }, { { ['116'] = 'cat_enter_too_long_time' } } })
+check(objects['32/3/37'] == true and objects['32/3/3'] == true and objects['32/3/2'] == 'Cat inside',
+  'too long: flag set, cat still present, state text kept')
+check(pawbby.inbox == true, 'visit window still open')
+check(alerted('unusually long'), 'cat too long alerts')
+run({ { { ['116'] = 'cat_enter_time_normal' } }, { { ['107'] = p107(4300) } }, { { ['112'] = 2342 } },
+  { { ['116'] = 'cat_leave' } }, { { ['116'] = 'cat_near_leave' } }, idle, idle, idle, idle,
+  { { ['116'] = 'work_idle' } } })
+check(objects['32/3/37'] == false, 'too long cleared')
+check(#samples('107') == 1 and samples('107')[1].w == 4300, 'visit still recorded')
+-- right after lid handling it is a person, not a cat
+store.pawbby_alertkeys = {}
+run({ { { ['116'] = 'lid_open' } }, { { ['116'] = 'lid_close' } }, { { ['116'] = 'work_idle' } },
+  { { ['116'] = 'cat_enter' } }, { { ['116'] = 'cat_enter_too_long_time' } } })
+check(logged('cat too long ignored, box being serviced'), 'too long after lid handling ignored')
+run({ { { ['116'] = 'cat_enter_time_normal' } }, { { ['116'] = 'cat_leave' } },
+  { { ['116'] = 'cat_near_leave' } }, idle, idle, idle, idle, { { ['116'] = 'work_idle' } } })
+-- waste drawer full
+run({ { { ['116'] = 'collect_full' } } })
+check(objects['32/3/35'] == true and alerted('waste drawer is full'), 'drawer full: object and alert')
+check(objects['32/3/2'] == 'Ready', 'drawer flag leaves the state text alone')
+run({ { { ['116'] = 'collect_normal' } } })
+check(objects['32/3/35'] == false, 'drawer emptied')
+-- no litter: only after 15 min (it shows briefly during a refill)
+run({ { { ['116'] = 'cat_litter_none' } } })
+check(objects['32/3/36'] == true and objects['32/3/13'] == true, 'litter empty and low set')
+wait(5 * 60)
+check(not alerted('has no litter'), 'no litter alert at once')
+wait(11 * 60)
+check(alerted('has no litter'), 'litter alert after 15 min')
+run({ { { ['116'] = 'cat_litter_enough' } } })
+check(objects['32/3/36'] == false and objects['32/3/13'] == false, 'litter refilled')
+dump('faults and flags')
 
 print('ALL CHECKS PASSED')

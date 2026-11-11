@@ -4,9 +4,10 @@ Needs `uv` (PyNaCl is pulled into a throwaway env, nothing is installed
 globally) and a `.env` in the repo root — copy `.env.example`. `.env` is
 git-ignored; never commit it.
 
-Secrets are not in `src/`: the resident script contains `${TUYA_KEY}`, which
-`lm.py push` fills in from `.env` and `lm.py pull` turns back into the
-placeholder. The LM itself holds the real values.
+Secrets are not in `src/` and not in the script on the LM: they live in LM
+storage (`pawbby_tuya`, `pawbby_mail`), put there by `set_secrets.sh` over SSH.
+(Until 2026-11-11 `lm.py push` filled `${...}` placeholders into the script;
+there are none left, so that step is a no-op.)
 
 The GitHub repo is **public**. `tools/check-secrets.sh` refuses a commit that
 contains any secret value from `.env`; install it in every clone with
@@ -14,6 +15,7 @@ contains any secret value from `.env`; install it in every clone with
 
 | Script | What it does |
 |--------|--------------|
+| `set_secrets.sh` | `--from-env`: copy the Tuya id/key and mail settings from `.env` into LM storage. `--mail-pass`: hidden prompt for a rotated App Password. `--mail-off`: email off. Over SSH (key `~/.ssh/lm_litzow`), values on stdin only. |
 | `deploy.sh` | Push `src/tuya34.lua` → user library `tuya34`, `src/pawbby_resident.lua` → script 64. Skips unchanged files, verifies by read-back, then watches the log for 20 s and fails unless there is exactly one `script start` and no new error-log entry. |
 | `deploy.sh --dry-run` | Diff local `src/` against what is on the LM. No writes. |
 | `logs.sh [N] [filter]` | Last N lines of the LM script log matching `filter` (default `pawbby`). `-f` follows, `-e` reads the error log. |
@@ -66,3 +68,14 @@ Optional, not yet written:
 - `samples.py` — export the `pawbby_samples` history out of LM storage to CSV
   for offline analysis (the resident script already keeps up to 300, each with
   timestamp, weight, cat and raw DP 107 payload).
+
+## Deploying over SSH (no web login)
+
+When the LM web login is not available, the same result over SSH as root:
+copy `src/pawbby_resident.lua` to `/tmp`, `loadstring` it to check syntax,
+`db:update('scripting', {script = src}, {id = 64})`, read it back, then
+`lmscripting.reloadsingle(db:getrow('SELECT * FROM scripting WHERE id=64'))`.
+`reloadsingle` takes the **row**, not the id (`reloadsingle(64)` throws
+"attempt to index a number value"). Then check the log for exactly one
+`script start` and the error table for nothing new, as `deploy.sh` does.
+Used for the 2026-11-11 deploy.

@@ -26,12 +26,15 @@ end
 local socket = require('socket')
 require('encdec')
 
+--[[ Secrets live in LM storage, never in this script (it is in a public repo,
+     and LM backups and exports carry script bodies):
+       pawbby_tuya = { id = <Tuya device id>, key = <Tuya local key> }
+       pawbby_mail = { to = <alert recipient>, user = <Gmail address>,
+                       pass = <Google App Password> }   -- absent = email off
+     Set them with tools/set_secrets.sh. ]]
 local CFG = {
   ip  = '192.168.51.162',
-  id  = '${TUYA_ID}',
-  key = '${TUYA_KEY}',
   debug = false,  -- set true to log every frame incl. the tx JSON
-  -- id and key are filled in from .env by tools/deploy.sh; never commit them
 }
 
 -------------------------------------------------------------------- cats ----
@@ -61,10 +64,14 @@ local HEALTH_BASE_DAYS   = 14    -- rolling baseline window (days)
 local HEALTH_WEIGHT_DROP = 0.05  -- >= 5 % weight loss vs baseline alerts
 local HEALTH_SPIKE       = 2.0   -- a daily count >= 2x its baseline alerts
 local ACUTE_VISITS       = 8     -- visits in one day (one cat) -> same-day alert (no baseline)
-local ALERT_EMAIL     = '${ALERT_EMAIL}'          -- recipient; '' = email off
-local GMAIL_USER      = '${GMAIL_USER}'           -- gmail address (SMTP login + From)
-local GMAIL_APP_PASS  = '${GMAIL_APP_PASSWORD}'   -- a Google App Password (from .env)
-local ALERT_EMAIL_MIN = 300                       -- min seconds between emails (anti-storm)
+local HEALTH_LOW_DAYS   = 2     -- weight alert needs this many low days in a row
+-- email settings from storage (see CFG above); any field missing = email off
+local MAIL = storage.get('pawbby_mail')
+if type(MAIL) ~= 'table' then MAIL = {} end
+local ALERT_EMAIL     = MAIL.to or ''     -- recipient
+local GMAIL_USER      = MAIL.user or ''   -- gmail address (SMTP login + From)
+local GMAIL_APP_PASS  = MAIL.pass or ''   -- a Google App Password
+local ALERT_EMAIL_MIN = 300               -- min seconds between emails (anti-storm)
 local WEEKLY_DAY  = 1    -- weekday to email the weekly report (0=Sun..6=Sat); 1=Mon
 local WEEKLY_HOUR = 8    -- send after this hour, local time
 
@@ -286,6 +293,12 @@ local function recordcat(w, payload)
   if idx then
     -- grp.write, not put: the object timestamp should show this visit
     grp.write(CAT_KG[idx], w)
+    -- every weighing of the day, so the daily weight can be their median
+    local dw = storage.get('pawbby_dayweights')
+    if type(dw) ~= 'table' then dw = {} end
+    dw[who] = dw[who] or {}
+    table.insert(dw[who], w)
+    storage.set('pawbby_dayweights', dw)
     local cv = storage.get('pawbby_catvisits')
     if type(cv) ~= 'table' then cv = {} end
     cv[who] = (cv[who] or 0) + 1
@@ -359,7 +372,8 @@ end
 --[[ Compare each cat's recent use and weight against its own rolling baseline
      and flag a change. Biased to alert. Sets the health objects; the full text
      also goes to the log and an LM alert. ]]
-local function healthcheck(daily)
+-- quiet = re-evaluate and set the objects only: no LM alert, no email
+local function healthcheck(daily, quiet)
   local issues = {}
   local function base(series)
     local b = {}
@@ -385,15 +399,34 @@ local function healthcheck(daily)
         issues[#issues + 1] = name .. ' visits ' .. (y.v or 0) .. '/' .. math.floor(mv + 0.5)
       end
     end
-    if #wts >= HEALTH_MIN_DAYS then
-      local mw = base(wts)
-      local now_w = wts[#wts]
-      if mw and now_w <= mw * (1 - HEALTH_WEIGHT_DROP) then
-        issues[#issues + 1] = name .. ' wt -' .. math.floor((1 - now_w / mw) * 100 + 0.5) .. '%'
+    --[[ Weight: a cat's weighings swing by 100-150 g from day to day, so one
+         low day is noise (Charlie, 10 Nov 2026: one 4186 g weighing against
+         a 4430 g median raised a false alarm). Alert only when the last
+         HEALTH_LOW_DAYS daily weights are all low against the baseline of
+         the days before them. ]]
+    if #wts >= HEALTH_MIN_DAYS + HEALTH_LOW_DAYS - 1 then
+      local b = {}
+      for k = math.max(1, #wts - HEALTH_LOW_DAYS - HEALTH_BASE_DAYS + 1), #wts - HEALTH_LOW_DAYS do
+        b[#b + 1] = wts[k]
+      end
+      local mw = median(b)
+      local low, sum = true, 0
+      for k = #wts - HEALTH_LOW_DAYS + 1, #wts do
+        sum = sum + wts[k]
+        if not mw or wts[k] > mw * (1 - HEALTH_WEIGHT_DROP) then low = false end
+      end
+      if low then
+        local avg = sum / HEALTH_LOW_DAYS
+        issues[#issues + 1] = name .. ' wt -' .. math.floor((1 - avg / mw) * 100 + 0.5) .. '%'
       end
     end
   end
-  if #issues > 0 then
+  if #issues > 0 and quiet then
+    local full = table.concat(issues, '; ')
+    put(GA.healthbad, true)
+    put(GA.healthmsg, full:sub(1, 14))
+    log('pawbby: HEALTH (re-check, no new alert) ' .. full)
+  elseif #issues > 0 then
     local full = table.concat(issues, '; ')
     put(GA.healthbad, true)
     put(GA.healthmsg, full:sub(1, 14))
@@ -409,16 +442,17 @@ local function healthcheck(daily)
   end
 end
 
---[[ Record the day that just ended (per-cat visits and last weight) and run
-     the trend check. Called once at the midnight rollover. ]]
+--[[ Record the day that just ended (per-cat visits and the median of that
+     day's weighings; 0 = not weighed) and run the trend check. Called once at
+     the midnight rollover. ]]
 local function healthrollup(day)
   local daily = storage.get('pawbby_daily')
   if type(daily) ~= 'table' then daily = {} end
   local cv = storage.get('pawbby_catvisits'); if type(cv) ~= 'table' then cv = {} end
+  local dw = storage.get('pawbby_dayweights'); if type(dw) ~= 'table' then dw = {} end
   local rec = { d = day }
-  for i, name in ipairs(CAT_NAMES) do
-    rec[name] = { v = cv[name] or 0,
-                  w = tonumber(grp.getvalue(CAT_KG[i])) or 0 }
+  for _, name in ipairs(CAT_NAMES) do
+    rec[name] = { v = cv[name] or 0, w = median(dw[name] or {}) or 0 }
   end
   daily[#daily + 1] = rec
   while #daily > 30 do table.remove(daily, 1) end
@@ -536,13 +570,61 @@ local function finishvisit()
   pawbby.visit107, pawbby.visit107w = nil, nil
 end
 
+--[[ One-off (2026-11-11): the daily history used to hold each cat's LAST
+     weighing of the day. Rebuild it from the stored samples as the median of
+     the day's weighings, and seed today's weighings, so the new weight rule
+     starts from comparable numbers. Days without samples keep their value. ]]
+local function rebuilddaily()
+  local samples = storage.get('pawbby_samples')
+  if type(samples) ~= 'table' then samples = {} end
+  local byday = {}
+  for _, s in ipairs(samples) do
+    if s.src == '107' and s.who and s.who ~= 'Unknown' then
+      local d = os.date('%Y-%m-%d', s.t)
+      byday[d] = byday[d] or {}
+      byday[d][s.who] = byday[d][s.who] or {}
+      table.insert(byday[d][s.who], s.w)
+    end
+  end
+  local daily = storage.get('pawbby_daily')
+  if type(daily) ~= 'table' then daily = {} end
+  local changed = 0
+  for _, rec in ipairs(daily) do
+    for _, name in ipairs(CAT_NAMES) do
+      local ws = byday[rec.d] and byday[rec.d][name]
+      if rec[name] and ws then rec[name].w = median(ws); changed = changed + 1 end
+    end
+  end
+  storage.set('pawbby_daily', daily)
+  storage.set('pawbby_dayweights', byday[os.date('%Y-%m-%d')] or {})
+  storage.set('pawbby_daily_median', true)
+  log('pawbby: daily weights rebuilt as medians (' .. changed .. ' cat-days)')
+end
+
 if not pawbby then
+  local tk = storage.get('pawbby_tuya')
+  if type(tk) ~= 'table' or not tk.id or not tk.key then
+    -- log once per LM start, not every cycle
+    if not PAWBBY_NOKEYS then
+      PAWBBY_NOKEYS = true
+      log('pawbby: no Tuya id/key in storage (pawbby_tuya), not connecting')
+    end
+    return
+  end
+  CFG.id, CFG.key = tk.id, tk.key
   -- extra parens: storage.get returns more than one value, tonumber would
   -- take the second as a numeric base and throw
   local n = (tonumber((storage.get('pawbby_starts'))) or 0) + 1
   storage.set('pawbby_starts', n)
   log('pawbby: script start #' .. n)
   ensureobjects()
+  if not storage.get('pawbby_daily_median') then
+    rebuilddaily()
+    -- re-evaluate the health objects under the new rule, without alerting.
+    -- Only here: on a normal restart it would clear today's acute alert.
+    local daily = storage.get('pawbby_daily')
+    if type(daily) == 'table' and #daily > 0 then healthcheck(daily, true) end
+  end
   pawbby = {
     dev = tuya.new(CFG),
     nextbeat = 0,
@@ -618,6 +700,7 @@ if prevday ~= today then
   storage.set('pawbby_visits', 0)
   grp.write(GA.visits, 0)
   storage.set('pawbby_catvisits', {})
+  storage.set('pawbby_dayweights', {})
   storage.set('pawbby_elim', {})
   for _, ga in ipairs(CAT_VISITS) do grp.write(ga, 0) end
   log('pawbby: new day ' .. today .. ', visit counters reset')

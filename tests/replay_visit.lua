@@ -77,6 +77,10 @@ local chunk = assert(loadstring(SRC, '=pawbby_resident'))
 local function world()
   pawbby = nil
   clock, logs, objects, store, alerts, queries, inbox, writes, mails = T0, {}, {}, {}, {}, 0, {}, {}, {}
+  -- secrets come from LM storage now; fake ones here
+  store.pawbby_tuya = { id = 'testdevice', key = '0123456789abcdef' }
+  store.pawbby_mail = { to = 'alerts@example.invalid', user = 'box@example.invalid', pass = 'x' }
+  store.pawbby_daily_median = true   -- skip the one-off rebuild (tested in 10)
 end
 
 -- one entry per 5 s cycle: list of dps tables arriving in that cycle
@@ -283,17 +287,36 @@ for d = 1, 6 do
     Charlie = { v = 2, w = 4100 },
   }
 end
--- yesterday: Isma weight dropped to 4900 g (-8%), Charlie did not visit
-objects['32/3/16'] = 4900
-objects['32/3/17'] = 4100
+-- the day before yesterday was already low for Isma
+store.pawbby_daily[7] = { d = 'day7', Isma = { v = 2, w = 4880 }, Charlie = { v = 2, w = 4100 } }
+-- yesterday: Isma weighed 4900 and 4920 g (median 4910; with 4880 the day before, -8% on average), Charlie did not visit
+store.pawbby_dayweights = { Isma = { 4900, 4920 } }
 store.pawbby_catvisits = { Isma = 2 }
 clock = clock + 86400
 run({ idle })
 dump('trend')
 check(objects['32/3/20'] == true, 'trend change raises health alert')
 check(logged('HEALTH'), 'health summary logged')
-check(logged('Isma wt -'), 'Isma weight loss flagged')
+check(logged('Isma wt -8%'), 'Isma weight loss over two low days flagged')
 check(logged('Charlie no visit'), 'Charlie zero-visit flagged')
+check(store.pawbby_daily[#store.pawbby_daily].Isma.w == 4910, 'daily weight is the median of the day')
+check(next(store.pawbby_dayweights) == nil, 'day weighings reset at midnight')
+
+-------------------------- 7b. one low day is not enough (Charlie, 10 Nov) --
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+store.pawbby_daily = {}
+for d = 1, 14 do
+  store.pawbby_daily[d] = { d = 'day' .. d, Isma = { v = 3, w = 5050 }, Charlie = { v = 2, w = 4430 } }
+end
+store.pawbby_dayweights = { Isma = { 5040 }, Charlie = { 4186 } }
+store.pawbby_catvisits = { Isma = 3, Charlie = 2 }
+clock = clock + 86400
+run({ idle })
+dump('one low day')
+check(not logged('wt -'), 'a single low weighing day raises no weight alert')
+check(objects['32/3/20'] == false and objects['32/3/21'] == 'OK', 'health stays OK')
+check(#alerts == 0 and #mails == 0, 'no alert, no email')
 
 -------------------------------------------- 8. weekly report ------------
 world()
@@ -322,5 +345,47 @@ check(wr.b:find('kg', 1, true) ~= nil, 'weight in the report')
 check(wr.b:find('visits/day', 1, true) ~= nil, 'visit frequency in the report')
 check(wr.b:find('urinations', 1, true) == nil, 'no unreliable urination claim in the report')
 check(logged('weekly report queued'), 'weekly send logged')
+
+------------------------------------------ 9. no keys in storage --------
+world()
+store.pawbby_tuya = nil
+run({ idle, idle })
+dump('no keys')
+check(pawbby == nil, 'nothing started without keys')
+check(logged('no Tuya id/key in storage'), 'missing keys logged')
+check(queries == 0 and #writes == 0, 'no device traffic without keys')
+PAWBBY_NOKEYS = nil
+
+------------------------------- 10. one-off rebuild of the daily weights --
+world()
+store.pawbby_daily_median = nil
+local function day(k) return os.date('%Y-%m-%d', T0 - k * 86400) end
+store.pawbby_daily = {}
+for k = 15, 1, -1 do
+  store.pawbby_daily[#store.pawbby_daily + 1] =
+    { d = day(k), Isma = { v = 3, w = 9999 }, Charlie = { v = 2, w = 9999 } }
+end
+store.pawbby_samples = {}
+for k = 15, 1, -1 do
+  for _, w in ipairs({ 5000, 5100, 5050 }) do
+    store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0 - k * 86400 + 3600, w = w, src = '107', who = 'Isma' }
+  end
+  local cw = (k <= 2) and 4100 or 4430   -- Charlie low on the last two days
+  store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0 - k * 86400 + 7200, w = cw, src = '107', who = 'Charlie' }
+end
+store.pawbby_samples[#store.pawbby_samples + 1] = { t = T0, w = 5070, src = '107', who = 'Isma' }   -- today
+store.pawbby_day = os.date('%Y-%m-%d', T0)   -- as on the LM: no midnight rollover on this start
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+dump('rebuild')
+check(store.pawbby_daily_median == true, 'rebuild runs once and is marked')
+check(store.pawbby_daily[1].Isma.w == 5050, 'past day = median of its weighings')
+check(store.pawbby_dayweights.Isma[1] == 5070, "today's weighings seeded")
+check(logged('rebuilt as medians (30 cat-days)'), 'rebuild logged')
+check(objects['32/3/20'] == true and logged('re-check, no new alert'), 'quiet re-check sets the objects')
+check(#alerts == 0 and #mails == 0, 'the re-check neither alerts nor emails')
+local before = #logs
+pawbby = nil
+run({ idle })
+check(not table.concat(logs, '\n', before + 1):find('rebuilt', 1, true), 'no second rebuild on restart')
 
 print('ALL CHECKS PASSED')

@@ -90,9 +90,9 @@ Written so the same ground is not covered twice.
   Docs now follow the LM. Commands on 32/3/10 and 32/3/11 can take up to 5 s.
 - `badjson (cmd 8)` logged once (09:38:10). The frame text is now included
   in that log line so it can be read next time.
-- Event script 63 "Pawbby" on the LM is a leftover capability probe
-  (hmac/aes/socket checks), triggered by the `Pawbby` tag. **Disabled**
-  2026-09-17 (source unchanged); delete it once nobody needs it.
+- Event script 63 "Pawbby" on the LM was a leftover capability probe
+  (hmac/aes/socket checks). Disabled 2026-09-17, **deleted 2026-11-11** (copy in
+  the LitzowStr project, `reference/pawbby-2026-11-11/`).
 - Fault-code DP unidentified; the liner jam was invisible to every mapped DP.
 - Mosaic does not offer newly created objects in its widget pickers. Reload,
   "Save project", localStorage clear and seeding a value all failed to
@@ -147,3 +147,14 @@ The tare payload, the working clean-now payload (`AQAAAA==`, from their
 own APK notes), the DP 107 weight layout, the `lid_*` and `cat_litter_*` states and the
 `deodorant_days` identification were established here and should be sent
 back to them.
+
+## Daily weight and the weight alert (2026-11-11)
+
+The health alert said "Charlie wt -6%" on 11 Nov. The daily record held the
+**last** weighing of the day; on 10 Nov that was a single 4186 g weighing
+against Charlie's ~4430 g median. Recomputed from the 300 stored samples,
+daily medians move 100-150 g from day to day, so one weighing is noise. Now:
+daily weight = median of the day's weighings (`pawbby_dayweights`), and a
+weight alert needs 2 low days in a row. On deploy the 30-day history was
+rebuilt from the samples (57 cat-days) and re-checked without alerting: no
+alert for either cat.

@@ -72,8 +72,10 @@ abandoned; see `docs/FINDINGS.md`.)
   visits in a day raises an alert immediately -- the urinary-blockage catch,
   which for a male cat (Isma) is an emergency. Threshold `ACUTE_VISITS`.
 - **Trend** (daily): each cat's daily visits and weight are compared to its own
-  rolling baseline; a weight drop, a day with no visit, or a visit-frequency
-  spike raises an alert.
+  rolling baseline; a day with no visit or a visit-frequency spike raises an
+  alert. The daily weight is the **median of that day's weighings**, and a
+  weight alert needs `HEALTH_LOW_DAYS` (2) low days in a row: single weighings
+  swing 100-150 g, and one low day gave a false alarm on 10 Nov 2026.
 - Surfaced on `32/3/20` (Health alert, bool) and `32/3/21` (Health note, short
   text), plus the LM log and an LM alert. History accrues in LM storage
   (`pawbby_daily`).
@@ -100,19 +102,23 @@ a slow SMTP call cannot overrun the resident. Setup is entirely in `.env`:
    GMAIL_USER=youraccount@gmail.com     # the sending Gmail account
    GMAIL_APP_PASSWORD=the16charapppass  # the App Password, no spaces
    ```
-3. `tools/deploy.sh`. Leave any of the three blank to keep email off.
+3. `tools/set_secrets.sh --from-env` copies them into LM storage. Leave any of
+   the three blank to keep email off. After rotating the App Password in Google:
+   `tools/set_secrets.sh --mail-pass` (hidden prompt).
 
-The App Password never enters the repo: `src/` holds only `${GMAIL_APP_PASSWORD}`
-and friends; the real values live in `.env` (git-ignored) and are filled in at
-deploy. `tools/check-secrets.sh` refuses a commit that contains them.
+The App Password never enters the script or the repo: the resident reads it from
+LM storage (`pawbby_mail`) on every cycle. `tools/check-secrets.sh` refuses a
+commit that contains a value from `.env`.
 
 ## Configuration
 
-Copy `.env.example` to `.env` (git-ignored) and fill in the LM login and the
-Tuya device id and local key. The repo only holds `${TUYA_ID}`/`${TUYA_KEY}`
-placeholders; `tools/deploy.sh` fills them in when it saves to the LM. The
-box IP is at the top of `src/pawbby_resident.lua`. Before the first commit
-in a clone: `cp tools/pre-commit .git/hooks/pre-commit`.
+Copy `.env.example` to `.env` (git-ignored) and fill in the LM login, the
+Tuya device id and local key, and the mail settings. Then
+`tools/set_secrets.sh --from-env` puts the secrets into LM storage
+(`pawbby_tuya`, `pawbby_mail`); the script reads them from there and holds none
+itself (since 2026-11-11). Without `pawbby_tuya` it logs once and does not
+connect. The box IP is at the top of `src/pawbby_resident.lua`. Before the first
+commit in a clone: `cp tools/pre-commit .git/hooks/pre-commit`.
 
 The local key is obtained once from the Tuya developer platform
 (Cloud project, linked app account, Query Device Details in Bulk).

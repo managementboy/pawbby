@@ -1,0 +1,289 @@
+{
+  "_source": "Tuya IoT platform (EU), API Explorer: GET /v2.0/cloud/thing/{device_id}/model, read 2026-11-11. product_id fetjzvf6o6dihnhq. Device id, keys and account omitted.",
+  "model": {
+    "modelId": "000004sa7o",
+    "services": [
+      {
+        "actions": [],
+        "code": "",
+        "description": "",
+        "events": [],
+        "name": "默认服务",
+        "properties": [
+          {
+            "abilityId": 101,
+            "accessMode": "rw",
+            "code": "work_state",
+            "description": "",
+            "name": "工作状态",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 102,
+            "accessMode": "rw",
+            "code": "fault_code",
+            "description": "",
+            "name": "故障码",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 103,
+            "accessMode": "rw",
+            "code": "device_state",
+            "description": "",
+            "name": "设备状态",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 104,
+            "accessMode": "rw",
+            "code": "cat_info",
+            "description": "",
+            "name": "猫咪信息",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 105,
+            "accessMode": "rw",
+            "code": "device_control",
+            "description": "",
+            "name": "设备控制",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 106,
+            "accessMode": "rw",
+            "code": "clean_control",
+            "description": "",
+            "name": "清理控制",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 107,
+            "accessMode": "rw",
+            "code": "toilet_data",
+            "description": "",
+            "name": "如厕数据",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 108,
+            "accessMode": "rw",
+            "code": "device_info",
+            "description": "",
+            "name": "设备信息",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 109,
+            "accessMode": "rw",
+            "code": "weight_cal",
+            "description": "",
+            "name": "称重校准",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 110,
+            "accessMode": "rw",
+            "code": "calibrat_result",
+            "description": "",
+            "name": "校准结果",
+            "typeSpec": {
+              "type": "raw",
+              "maxlen": 128
+            }
+          },
+          {
+            "abilityId": 111,
+            "accessMode": "ro",
+            "code": "debug_data_01",
+            "description": "最大值7fffffff",
+            "name": "调试数据01",
+            "typeSpec": {
+              "type": "value",
+              "max": 2147483647,
+              "min": -2147483647,
+              "scale": 0,
+              "step": 1,
+              "unit": ""
+            }
+          },
+          {
+            "abilityId": 112,
+            "accessMode": "ro",
+            "code": "debug_data_02",
+            "description": "",
+            "name": "调试数据02",
+            "typeSpec": {
+              "type": "value",
+              "max": 2147483647,
+              "min": -2147483647,
+              "scale": 0,
+              "step": 1,
+              "unit": ""
+            }
+          },
+          {
+            "abilityId": 113,
+            "accessMode": "ro",
+            "code": "debug_data_03",
+            "description": "",
+            "name": "调试数据03",
+            "typeSpec": {
+              "type": "value",
+              "max": 2147483647,
+              "min": 0,
+              "scale": 0,
+              "step": 1,
+              "unit": ""
+            }
+          },
+          {
+            "abilityId": 114,
+            "accessMode": "ro",
+            "code": "data_flag_01",
+            "description": "",
+            "name": "数据标志01",
+            "typeSpec": {
+              "type": "enum",
+              "range": [
+                "door_pir_err",
+                "door_pir_ok",
+                "biology_err",
+                "biology_ok",
+                "collect_pir_err",
+                "collect_pir_ok",
+                "door_air_err",
+                "door_air_ok",
+                "flash_err",
+                "flash_ok",
+                "motor_err",
+                "motor_ok",
+                "sensor_weight_err",
+                "sensor_weight_ok",
+                "dump_err",
+                "dump_ok",
+                "block_err",
+                "block_ok",
+                "roller_overweight_err",
+                "roller_overweight_ok",
+                "deodorant_reset",
+                "roller_install_err",
+                "roller_install_ok",
+                "roller_uninstall_err",
+                "roller_uninstall_ok"
+              ]
+            }
+          },
+          {
+            "abilityId": 115,
+            "accessMode": "ro",
+            "code": "data_flag_02",
+            "description": "",
+            "name": "数据标志02",
+            "typeSpec": {
+              "type": "enum",
+              "range": [
+                "auto_clean_enable",
+                "auto_clean_disable",
+                "stool_mode_enable",
+                "stool_mode_disable",
+                "nodisturb_mode_enable",
+                "nodisturb_mode_disable",
+                "auto_screen_enable",
+                "auto_screen_disable",
+                "child_lock_enable",
+                "child_lock_disable",
+                "cat_litter_pawbby",
+                "cat_litter_tofe",
+                "cat_litter_bentonite",
+                "cat_litter_mix",
+                "time_zone",
+                "deodorant_days",
+                "nodisturb_time"
+              ]
+            }
+          },
+          {
+            "abilityId": 116,
+            "accessMode": "ro",
+            "code": "data_flag_03",
+            "description": "",
+            "name": "数据标志03",
+            "typeSpec": {
+              "type": "enum",
+              "range": [
+                "cat_enter",
+                "cat_leave",
+                "work_idle",
+                "work_mclean",
+                "work_aclean",
+                "work_empty",
+                "work_smooth",
+                "work_init",
+                "work_update",
+                "dev_reset_wifi",
+                "dev_reset",
+                "lid_open",
+                "lid_close",
+                "cat_near",
+                "cat_near_leave",
+                "collect_full",
+                "collect_normal",
+                "collect_install",
+                "collect_uninstall",
+                "toilet_much",
+                "toilet_little",
+                "cat_litter_little",
+                "cat_litter_enough",
+                "cat_litter_none",
+                "cat_enter_too_long_time",
+                "cat_enter_time_normal",
+                "power_off",
+                "power_on"
+              ]
+            }
+          },
+          {
+            "abilityId": 117,
+            "accessMode": "ro",
+            "code": "motor_data",
+            "description": "",
+            "name": "电机相关数据",
+            "typeSpec": {
+              "type": "string",
+              "maxlen": 255
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

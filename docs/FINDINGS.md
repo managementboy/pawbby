@@ -93,7 +93,8 @@ Written so the same ground is not covered twice.
 - Event script 63 "Pawbby" on the LM was a leftover capability probe
   (hmac/aes/socket checks). Disabled 2026-09-17, **deleted 2026-11-11** (copy in
   the LitzowStr project, `reference/pawbby-2026-11-11/`).
-- Fault-code DP unidentified; the liner jam was invisible to every mapped DP.
+- Fault-code DP: found 2026-11-11, it is DP 102 (see below). The liner jam
+  was invisible to DP 116; 102 was only logged then.
 - Mosaic does not offer newly created objects in its widget pickers. Reload,
   "Save project", localStorage clear and seeding a value all failed to
   refresh it. Cache location unknown.
@@ -181,3 +182,27 @@ User libraries live in `/usr/share/lua/user/<name>.luas` (source) and
 `<name>.lua` = `string.dump(loadstring(src, '@/usr/share/lua/user/<name>.luas'))`
 (not stripped). Recompiling the existing tuya34 that way gave a byte-identical
 file. The resident re-requires the library on its next start.
+
+## Tuya data model and cloud log (2026-11-11)
+
+The Tuya developer platform still lists the box in the Cloud project the
+local key came from, and the box is still online to the Tuya cloud. "Query
+Things Data Model" gave the full model (`docs/tuya-data-model-2026-11-11.json`);
+the platform's Device Logs gave 7 days of every DP the box reported. Mapped
+in `docs/DATAPOINTS.md`. What changed in our understanding:
+
+- **DP 102 is `fault_code`.** It had been read as a "clean result" because it
+  comes after every clean, all zero. On 7 and 9 Nov it carried a `01` in
+  payload byte 12 while DP 114 said `roller_uninstall_err`.
+- **DP 115 is not the deodorant.** It names the setting that changed last;
+  the only report ever was `deodorant_days` on the setup evening.
+- **DP 114 covers every hardware check**, not only the motor. The script's
+  "anything but `motor_ok` is a motor problem" rule therefore misfires on
+  `roller_uninstall_ok` and `deodorant_reset`.
+- **The 2-byte "flag" in raw payloads is the data length.**
+- There are no settings DPs. Settings are written through DP 105
+  `device_control`, which nobody has seen used. Not to be written blind.
+- The platform's device-debugging page shows nothing for this product: it
+  uses the standard instruction set, which has no mapping for a litter box.
+  API Explorer works. The cloud log API (`/micro-app/cloud/api/v10/device/log/list`)
+  takes a `code` filter with the DP number.

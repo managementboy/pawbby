@@ -17,7 +17,8 @@ Built, waiting for real visits: per-cat weight and visits (Isma, Charlie),
 learned automatically from the box's own visit weighing (DP 107). Names
 appear after 6 weighed visits and only once the weights form two clusters.
 
-Open: fault-code DP unidentified. See `docs/FINDINGS.md`.
+Fault DP found (2026-11-11): DP 102 `fault_code`, from the Tuya data model;
+not yet wired to the Fault object. See `docs/DATAPOINTS.md`.
 
 ## Layout
 
@@ -53,7 +54,7 @@ Open: fault-code DP unidentified. See `docs/FINDINGS.md`.
 | 32/3/22 | Last visit: seconds in the box (DP 107) |
 | 32/3/23 | Clean cycles today |
 | 32/3/24 | Last clean cycle, seconds |
-| 32/3/25 | Deodorant cartridge, raw DP 115 |
+| 32/3/25 | Raw DP 115: name of the last setting changed (was read as deodorant) |
 | 32/3/26 | Motor / drum status, raw DP 114 |
 | 32/3/27 | Motor debug text, DP 117 |
 | 32/3/28 | Device info, DP 108 |

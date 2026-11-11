@@ -175,6 +175,7 @@ for i, name in ipairs(CAT_NAMES) do
   local c = {
     last = m .. '1', since = m .. '2', secs = m .. '3', w = m .. '4', w7 = m .. '5',
     wchg = m .. '6', visits = m .. '7', vday = m .. '8', health = m .. '9', level = m .. '10',
+    limit = m .. '11',
   }
   CATGA[name] = c
   local P = 'Pawbby ' .. name .. ' '
@@ -187,8 +188,9 @@ for i, name in ipairs(CAT_NAMES) do
     { c.wchg,   9,  'Weight Change 7d vs 30d', '%' },
     { c.visits, 5,  'Visits Today' },
     { c.vday,   9,  'Visits per Day 14d' },
-    { c.health, 16, 'Health', nil, 'OK' },
+    { c.health, 16, 'Health', nil, 'All good' },
     { c.level,  5,  'Health Level' },
+    { c.limit,  7,  'No-Visit Alert After', 'h' },
   }) do
     OBJECTS[#OBJECTS + 1] = { ga = o[1], dt = o[2], name = P .. o[3], units = o[4], init = o[5] }
   end
@@ -714,7 +716,7 @@ local function catvisit(who, w, secs, nvisits)
     end
   end
   if n >= FREQ_VISITS then
-    pawbby.freq[who] = t
+    pawbby.freq[who], pawbby.freqn[who] = t, n
     raisealert(3, 'freq:' .. who, who .. ' used the litter box ' .. n
       .. ' times in the last 2 hours. Frequent trips can mean a urinary problem'
       .. (sexof(who) == 'male' and '; in a male cat a blockage is an emergency' or '')
@@ -729,16 +731,26 @@ local function cathealth(t)
   local cs = catstate()
   local today = os.date('%Y-%m-%d', t)
   for _, name in ipairs(CAT_NAMES) do
-    local level, text = 0, 'OK'
-    if per[name] then level, text = 1, per[name]:gsub('^' .. name .. ' ', '') end
+    --[[ Health in words, at most 14 characters (DPT 16), for the app's tile:
+         'All good', 'Weight -8%', 'No visit 20 h', 'Many visits', '4 visits in 2h',
+         '8 visits today'. ]]
+    local level, text = 0, 'All good'
+    local issue = per[name] and per[name]:gsub('^' .. name .. ' ', '')
+    if issue then
+      level = 1
+      if issue:find('^wt ') then text = 'Weight ' .. issue:sub(4)
+      elseif issue == 'no visit' then text = 'No visit (day)'
+      else text = 'Many visits' end
+    end
     local c = cs[name]
     local last = c and math.max(c.last or 0, c.seen or 0)
     if last and last > 0 and t - last > (pawbby.gapthr[name] or math.huge) then
       level, text = 1, 'No visit ' .. math.floor((t - last) / 3600) .. ' h'
     end
-    if pawbby.acute[name] == today then level, text = 2, 'Many visits' end
+    if pawbby.acute[name] == today then level, text = 2, ACUTE_VISITS .. ' visits today' end
     if pawbby.freq[name] and t - pawbby.freq[name] < FREQ_WINDOW then
-      level, text = 2, 'Many visits 2h'
+      local n = pawbby.freqn[name] or FREQ_VISITS
+      level, text = 2, n < 10 and (n .. ' visits in 2h') or 'Many visits 2h'
     end
     put(CATGA[name].level, level)
     put(CATGA[name].health, text:sub(1, 14))
@@ -919,7 +931,7 @@ if not pawbby then
     -- the LM's SD card failed once already)
     dps = (type(storage.get('pawbby_dps')) == 'table' and storage.get('pawbby_dps')) or {},
     nextdps = 0,
-    freq = {}, acute = {}, gapthr = {},   -- fast alert state (phase 3)
+    freq = {}, freqn = {}, acute = {}, gapthr = {},   -- fast alert state (phase 3)
   }
   -- per-cat state: seed from the stored samples the first time
   local cs = catstate()
@@ -936,6 +948,7 @@ if not pawbby then
   end
   for _, name in ipairs(CAT_NAMES) do
     pawbby.gapthr[name] = gapthreshold(name)
+    put(CATGA[name].limit, math.floor(pawbby.gapthr[name] / 3600 + 0.5))
     local c = cs[name]
     if c then
       put(CATGA[name].last, os.date('%a %H:%M', c.last))
@@ -1028,6 +1041,7 @@ if prevday ~= today then
   for _, name in ipairs(CAT_NAMES) do
     grp.write(CATGA[name].visits, 0)
     pawbby.gapthr[name] = gapthreshold(name)
+    put(CATGA[name].limit, math.floor(pawbby.gapthr[name] / 3600 + 0.5))
   end
   catstats()
   log('pawbby: new day ' .. today .. ', visit counters reset')
@@ -1224,7 +1238,7 @@ end
      every label must stay within 14 characters. Unknown states fall back to
      the raw enum so a firmware change stays visible rather than silent. ]]
 local STATE_TEXT = {
-  work_idle      = 'Idle',
+  work_idle      = 'Ready',
   cat_near       = 'Cat nearby',
   cat_enter      = 'Cat inside',
   cat_leave      = 'Cat leaving',

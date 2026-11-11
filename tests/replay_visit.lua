@@ -275,6 +275,7 @@ check(table.concat(alerts, ' '):find('used the litter box 8 times today', 1, tru
 check(table.concat(alerts, ' '):find('4 times in the last 2 hours', 1, true) ~= nil,
   'frequent trips (4 in 2 h) raise an urgent alert before the daily count does')
 check(objects['32/3/33'] == 3 and objects['32/5/10'] == 2, 'urgent alert level and Isma health level 2')
+check(objects['32/5/9'] == 'Many visits 2h', 'health in words, within 14 characters (got ' .. tostring(objects['32/5/9']) .. ')')
 local emailed = false
 for _, m in ipairs(mails) do if m.b:find('used the litter box 8', 1, true) then emailed = true end end
 check(emailed, 'acute sends an email')
@@ -481,6 +482,7 @@ for i = 1, 20 * 12 do clock = clock + 300; chunk() end
 check(logged('[Watch] Isma has not used the litter box'), 'no-visit alert for Isma')
 check(logged('[Watch] Charlie has not used the litter box') and objects['32/3/33'] == 2, 'and for Charlie, timed from her uncounted visit')
 check(objects['32/5/10'] == 1 and objects['32/5/9'] == 'No visit 20 h', 'Isma health shows the gap')
+check(objects['32/5/11'] == 18 and objects['32/6/11'] == 18, 'alert limit per cat published')
 local gaps = 0
 for _, l in ipairs(logs) do if l:find('ALERT', 1, true) and l:find('Isma has not used', 1, true) then gaps = gaps + 1 end end
 check(gaps <= 2, 'the gap alert repeats at most every 6 h (got ' .. gaps .. ')')

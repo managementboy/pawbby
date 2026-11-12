@@ -554,9 +554,27 @@ local function acode(name, ...)
   return table.concat(out, '|')
 end
 
+--[[ Cleaning (Elkin 2026-11-12): while Marcia cleans the flat (LM object 32/7/20 "Cleaning
+     Active", written by the presence resident / user.cleaning) she moves and empties the box,
+     so its alerts would be noise. They are held in storage "pawbby_held" and sent once she
+     has left (minutetick), marked "(during cleaning)". Never held: a male cat's frequent-trips
+     alert (cat.many_visits, sex=male), because a blockage is an emergency. ]]
+local CLEANING_GA = '32/7/20'
+
 local function raisealert(level, key, text, feed, detail, code)
   local t = os.time()
   feed = feed or 'general'
+  if grp.getvalue(CLEANING_GA) == true
+     and not (code and code:find('^cat%.many_visits') and code:find('sex=male', 1, true)) then
+    local h = storage.get('pawbby_held')
+    if type(h) ~= 'table' then h = {} end
+    if #h < 20 then
+      h[#h + 1] = { level = level, key = key, text = text, feed = feed, detail = detail, code = code }
+      storage.set('pawbby_held', h)
+    end
+    log('pawbby: alert held while cleaning: ' .. text)
+    return false
+  end
   if key then
     local keys = storage.get('pawbby_alertkeys')
     if type(keys) ~= 'table' then keys = {} end
@@ -1147,6 +1165,15 @@ end
 
 -- once a minute, connected or not
 local function minutetick(t)
+  if grp.getvalue(CLEANING_GA) ~= true then        -- cleaning over: send what was held
+    local h = storage.get('pawbby_held')
+    if type(h) == 'table' and #h > 0 then
+      storage.set('pawbby_held', {})
+      for _, a in ipairs(h) do
+        raisealert(a.level, a.key, '(during cleaning) ' .. a.text, a.feed, a.detail, a.code)
+      end
+    end
+  end
   local cs = catstate()
   for _, name in ipairs(CAT_NAMES) do
     local c = cs[name]

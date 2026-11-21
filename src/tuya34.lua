@@ -127,23 +127,57 @@ local function frame(seq, cmd, payload, key)
   return body .. hmac(key, body) .. SUFFIX
 end
 
---[[ Returns cmd, payload (still encrypted), bytes_consumed -- or nil if the
-     buffer does not yet hold a complete frame. Device frames carry a 4 byte
-     return code between length and payload; detected via block alignment. ]]
-local function unframe(buf)
-  local s = buf:find(PREFIX, 1, true)
-  if not s then return nil end
-  if #buf < s + 15 then return nil end
-  local cmd = ru32(buf, s + 8)
-  local len = ru32(buf, s + 12)
-  local total = 16 + len
-  if #buf < s + total - 1 then return nil end
-  local plen = len - 36
-  local payload = buf:sub(s + 16, s + 15 + plen)
-  if plen % 16 ~= 0 and (plen - 4) % 16 == 0 then
-    payload = payload:sub(5)          -- strip return code
+--[[ Bounds for incoming frames (code review 2026-11-18, T3-PAWBBY #a5).
+     A status frame of this box is a few hundred bytes; anything above
+     MAX_LEN is not a frame of ours but a corrupt length field. ]]
+local MIN_LEN = 36            -- HMAC + suffix, empty payload
+local MAX_LEN = 16384
+
+--[[ Returns cmd, payload (still encrypted), bytes_consumed, mac_ok -- or nil
+     (plus the number of leading bytes that can be dropped) if the buffer
+     does not yet hold a complete frame. Device frames carry a 4 byte return
+     code between length and payload; detected via block alignment.
+     hkey: key for the frame's HMAC (local key in the handshake, session key
+     afterwards); mac_ok is false when the HMAC or the suffix does not match
+     (code review 2026-11-18, T3-PAWBBY #a4). The HMAC covers the 16 byte
+     header and the whole payload including the return code. ]]
+local function unframe(buf, hkey)
+  local from = 1
+  while true do
+    local s = buf:find(PREFIX, from, true)
+    if not s then
+      -- no prefix: everything but the last 3 bytes (a prefix may straddle
+      -- two reads) is junk (code review 2026-11-18, T3-PAWBBY #a5)
+      return nil, math.max(0, #buf - 3)
+    end
+    if #buf < s + 15 then return nil, s - 1 end
+    local cmd = ru32(buf, s + 8)
+    local len = ru32(buf, s + 12)
+    if len < MIN_LEN or len > MAX_LEN then
+      -- corrupt length: this prefix is not a frame start, look for the next
+      -- (code review 2026-11-18, T3-PAWBBY #a5)
+      from = s + 1
+    else
+      local total = 16 + len
+      if #buf < s + total - 1 then return nil, s - 1 end
+      local plen = len - 36
+      local raw = buf:sub(s + 16, s + 15 + plen)
+      local mac = buf:sub(s + 16 + plen, s + 47 + plen)
+      local suf = buf:sub(s + 48 + plen, s + 51 + plen)
+      if suf ~= SUFFIX then
+        -- no suffix where the length says: not a frame start either (a prefix inside a payload); look for the next
+        -- one, never hand the bytes on (diff review 2026-11-18, T3-PAWBBY)
+        from = s + 1
+      else
+      local macok = hkey == nil or mac == hmac(hkey, buf:sub(s, s + 15 + plen))
+      local payload = raw
+      if plen % 16 ~= 0 and (plen - 4) % 16 == 0 then
+        payload = payload:sub(5)          -- strip return code
+      end
+      return cmd, payload, s + total - 1, macok
+      end
+    end
   end
-  return cmd, payload, s + total - 1
 end
 
 ------------------------------------------------------------------- device ---
@@ -172,14 +206,39 @@ function Device:_send(cmd, payload, key)
   return self.sock:send(pkt)
 end
 
--- blocking read of exactly one frame, honouring the socket timeout
-function Device:_recv()
+-- blocking read of exactly one frame, honouring the socket timeout.
+-- hkey: HMAC key of the expected frame (see unframe).
+function Device:_recv(hkey)
+  --[[ A peer that streams bytes without ever completing a frame would keep
+       this loop reading forever (each receive returns at once); give up after
+       the timeout the caller set (code review 2026-11-18, T3-PAWBBY #a5). ]]
+  local stop = socket.gettime() + (self.tmo or 5)
   while true do
-    local cmd, payload, consumed = unframe(self.buf)
+    local cmd, payload, consumed, macok = unframe(self.buf, hkey)
     if cmd then
       self.buf = self.buf:sub(consumed + 1)
-      return cmd, payload
+      if macok then
+        self.lastrx = socket.gettime()
+        return cmd, payload
+      end
+      -- forged or corrupt frame (code review 2026-11-18, T3-PAWBBY #a4). The HMAC scheme is not yet confirmed
+      -- against the real box, so until M.ENFORCE_MAC is switched on the frame is still accepted and only logged
+      -- (once per minute): a wrong scheme must not take the litter box offline. Switch it on once the LM log has
+      -- shown no "bad HMAC" line for a few days of normal traffic.
+      if not M.ENFORCE_MAC then
+        local now = socket.gettime()
+        if now - (self.lastbadlog or 0) > 60 then
+          self.lastbadlog = now
+          log('tuya rx cmd=' .. tostring(cmd) .. ': bad HMAC/suffix (log only, ENFORCE_MAC off)')
+        end
+        self.lastrx = now
+        return cmd, payload
+      end
+      if self.debug then log('tuya rx cmd=' .. tostring(cmd) .. ' dropped: bad HMAC/suffix') end
+      return nil, 'badmac', cmd
     end
+    if payload and payload > 0 then self.buf = self.buf:sub(payload + 1) end   -- junk
+    if socket.gettime() >= stop then return nil, 'timeout' end
     local chunk, err, partial = self.sock:receive(1024)
     chunk = chunk or partial
     if chunk and #chunk > 0 then
@@ -202,6 +261,7 @@ function Device:connect(timeout)
   self:close()
   local sock = socket.tcp()
   sock:settimeout(timeout or 5)
+  self.tmo = timeout or 5
   local ok, err = sock:connect(self.ip, self.port)
   if not ok then return nil, 'connect: ' .. tostring(err) end
   sock:setoption('tcp-nodelay', true)
@@ -212,7 +272,7 @@ function Device:connect(timeout)
   local lnonce = randbytes(16)
   self:_send(M.CMD.SESS_START, aes(self.key, pad(lnonce), true), self.key)
 
-  local cmd, payload = self:_recv()
+  local cmd, payload = self:_recv(self.key)
   if cmd ~= M.CMD.SESS_RESP then
     self:close()
     return nil, 'handshake: unexpected cmd ' .. tostring(cmd) .. ' ' .. tostring(payload)
@@ -231,6 +291,7 @@ function Device:connect(timeout)
 
   -- exactly one block, encrypted without padding
   self.skey = aes(self.key, sxor(lnonce, rnonce), true)
+  self.lastrx = socket.gettime()
   return true
 end
 
@@ -238,6 +299,10 @@ function Device:close()
   if self.sock then pcall(function() self.sock:close() end) end
   self.sock, self.skey, self.buf = nil, nil, ''
 end
+
+-- seconds without a valid frame before poll() drops the session (#a5)
+M.STALE_S = 60
+M.ENFORCE_MAC = false   -- drop frames with a bad HMAC/suffix; off = log only (see tuya:_recv, T3-PAWBBY #a4)
 
 function Device:connected()
   return self.sock ~= nil and self.skey ~= nil
@@ -308,9 +373,19 @@ end
        nil, 'nojson'|'badjson', cmd, plaintext   undecodable frame      ]]
 function Device:poll(timeout)
   if not self:connected() then return nil, 'closed' end
-  self.sock:settimeout(timeout or 0.2)
-  local cmd, payload = self:_recv()
-  if not cmd then return nil, payload end
+  --[[ The box answers the heartbeat every 10 s. No valid frame for
+       STALE_S means the link is dead or only carries garbage, which never
+       ends in 'closed' by itself: close it so the caller reconnects and the
+       offline alert can run (code review 2026-11-18, T3-PAWBBY #a5). ]]
+  if socket.gettime() - (self.lastrx or 0) > M.STALE_S then
+    log('tuya: no valid frame for ' .. M.STALE_S .. ' s, closing the session')
+    self:close()
+    return nil, 'closed'
+  end
+  self.tmo = timeout or 0.2
+  self.sock:settimeout(self.tmo)
+  local cmd, payload, bcmd = self:_recv(self.skey)
+  if not cmd then return nil, payload, bcmd end
 
   if self.debug then
     log('tuya rx cmd=' .. string.format('0x%02x', cmd)
@@ -340,9 +415,15 @@ function Device:poll(timeout)
   if not okj or type(obj) ~= 'table' then return nil, 'badjson', cmd, plain end
 
   -- v3.4 wraps payloads as { protocol = n, t = ..., data = { dps = {...} } }
-  local dps = obj.dps or (obj.data and obj.data.dps)
-  if dps then return dps, cmd end
+  -- type checks: a number in "data" or a non-table "dps" must not raise
+  -- (code review 2026-11-18, T3-PAWBBY #a9)
+  local dps = obj.dps
+  if dps == nil and type(obj.data) == 'table' then dps = obj.data.dps end
+  if type(dps) == 'table' then return dps, cmd end
   return nil, 'nodps', cmd
 end
+
+-- internals for the offline tests (tests/tuya34_frames.lua) only
+M._test = { frame = frame, unframe = unframe, aes = aes, pad = pad, hmac = hmac }
 
 return M

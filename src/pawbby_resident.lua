@@ -380,7 +380,11 @@ end
      logged visits (9-11 Nov 2026) it was 12, 15, 16, 64, 112, each the time
      from cat_enter to cat_leave minus 17-21 s. Anything else returns nil, and
      every visit logs this weight next to the scale peak so it keeps being
-     checked. ]]
+     checked.
+     Bytes 7-8 are read as one 16-bit big-endian number: byte 7 has always
+     been 00 so far, but a visit over 255 s would otherwise wrap, and the
+     long visits are the ones that matter (code review 2026-11-18,
+     T3-PAWBBY #a11). The frame loop logs the bytes when byte 7 is not 0. ]]
 local function weight107(b64)
   local okd, raw = pcall(encdec.base64dec, b64)
   if not okd or type(raw) ~= 'string' or #raw ~= 9 then return nil end
@@ -388,7 +392,7 @@ local function weight107(b64)
   if b[1] ~= 1 or b[2] ~= 0 or b[3] ~= 0 or b[4] ~= 5 then return nil end
   local w = b[5] * 256 + b[6]
   if w < 1000 or w > 12000 then return nil end
-  return w, b[8]
+  return w, b[7] * 256 + b[8]
 end
 
 --[[ Two-cluster split of the recent DP 107 weights. For sorted 1-D data the
@@ -568,11 +572,39 @@ local function raisealert(level, key, text, feed, detail, code)
      and not (code and code:find('^cat%.many_visits') and code:find('sex=male', 1, true)) then
     local h = storage.get('pawbby_held')
     if type(h) ~= 'table' then h = {} end
-    if #h < 20 then
-      h[#h + 1] = { level = level, key = key, text = text, feed = feed, detail = detail, code = code }
-      storage.set('pawbby_held', h)
+    --[[ Alerts that repeat every minute (no visit, offline, stuck) used to add
+         an entry per minute until the list of 20 was full, and every later
+         alert of the visit was dropped, urgent ones included. Now an entry
+         with the same key is replaced by the newer one; when the list is
+         full, the oldest entry of the lowest level makes room, but never
+         for an alert of a lower level (code review 2026-11-18, T3-PAWBBY #b1). ]]
+    local entry = { level = level, key = key, text = text, feed = feed, detail = detail, code = code }
+    local slot
+    if key then
+      for i, a in ipairs(h) do
+        if a.key == key then slot = i; break end
+      end
     end
-    log('pawbby: alert held while cleaning: ' .. text)
+    if not slot and #h >= 20 then
+      local low
+      for i, a in ipairs(h) do
+        if not low or (tonumber(a.level) or 0) < (tonumber(h[low].level) or 0) then low = i end
+      end
+      if (tonumber(h[low].level) or 0) <= (tonumber(level) or 0) then
+        log('pawbby: held list full, dropped older held alert: ' .. tostring(h[low].text))
+        table.remove(h, low)
+        slot = #h + 1
+      end
+    elseif not slot then
+      slot = #h + 1
+    end
+    if slot then
+      h[slot] = entry
+      storage.set('pawbby_held', h)
+      log('pawbby: alert held while cleaning: ' .. text)
+    else
+      log('pawbby: held list full of higher alerts, not held: ' .. text)
+    end
     return false
   end
   if key then
@@ -753,7 +785,13 @@ local function healthcheck(daily, quiet)
          a 4430 g median raised a false alarm). Alert only when the last
          HEALTH_LOW_DAYS daily weights are all low against the baseline of
          the days before them. ]]
-    if #wts >= HEALTH_MIN_DAYS + HEALTH_LOW_DAYS - 1 then
+    --[[ Only when yesterday (the last daily record) has a weighing: on a
+         day without one, the same older low days would be judged again under
+         a new daily key and repeat the alert with no new data (code review
+         2026-11-18, T3-PAWBBY #b-N3). ]]
+    local lastday = daily[#daily] and daily[#daily][name]
+    local weighed = lastday and lastday.w and lastday.w > 0
+    if weighed and #wts >= HEALTH_MIN_DAYS + HEALTH_LOW_DAYS - 1 then
       local b = {}
       for k = math.max(1, #wts - HEALTH_LOW_DAYS - HEALTH_BASE_DAYS + 1), #wts - HEALTH_LOW_DAYS do
         b[#b + 1] = wts[k]
@@ -1531,6 +1569,13 @@ end
 
 local dev = pawbby.dev
 
+--[[ Close the visit window before the connect block, so a box that drops
+     right after a visit does not keep it open until it is back (code review
+     2026-11-18, T3-PAWBBY #a7). finishvisit() does not talk to the box. ]]
+if pawbby.settle and not pawbby.inbox and now >= pawbby.settle then
+  finishvisit()
+end
+
 ----------------------------------------------------------------- connect ----
 
 if not dev:connected() then
@@ -1545,6 +1590,7 @@ if not dev:connected() then
       log('pawbby: connected, session key established (connection ' .. n .. ' today)')
       pawbby.offsince = nil
       pawbby.last = {}
+      pawbby.lastflag = {}   -- flag filter starts afresh like pawbby.last (#a3)
       pawbby.nextbeat = now + 10
       pawbby.nextquery = 0
       put(GA.online, true)
@@ -1579,10 +1625,6 @@ end
 if now >= pawbby.nextdps then
   pawbby.nextdps = now + 600
   storage.set('pawbby_dps', pawbby.dps)
-end
-
-if pawbby.settle and not pawbby.inbox and now >= pawbby.settle then
-  finishvisit()
 end
 
 ----------------------------------------------------------------- commands ---
@@ -1655,7 +1697,10 @@ end
 local cmd = (storage.get('pawbby_cmd'))
 if cmd then
   storage.set('pawbby_cmd', nil)
-  if cmd == 'clean' then
+  if type(cmd) ~= 'string' then
+    -- (code review 2026-11-18, T3-PAWBBY #a6)
+    log('pawbby: pawbby_cmd ignored, not a string: ' .. type(cmd))
+  elseif cmd == 'clean' then
     sendclean('storage')
   elseif CMDS[cmd] then
     dev:set({ ['106'] = CMDS[cmd] })
@@ -1715,6 +1760,11 @@ while socket.gettime() < deadline do
       e.v, e.t, e.n = s:sub(1, 120), now, e.n + 1
       pawbby.dps[key] = e
 
+      --[[ Any machine state on DP 116 (repeated or not) ends the flags of the visit: the next flag of any family
+           is new again. Here, before the change filter, because a repeated "idle" never passes it (diff review
+           2026-11-18, T3-PAWBBY #a3). ]]
+      if key == '116' and not FLAG_STATES[s] then pawbby.lastflag = {} end
+
       --[[ DP 107 bypasses the change filter: two visits can carry the same
            payload. It is not part of query replies (a reconnect, which
            clears pawbby.last, never produced a phantom visit), so every
@@ -1731,6 +1781,10 @@ while socket.gettime() < deadline do
           log('pawbby: CAT VISIT (dp 107 = ' .. s .. ' [' .. hexdump(s)
               .. ']) count ' .. pawbby.visits)
           local w, secs = weight107(s)
+          if secs and secs > 255 then
+            -- byte 7 not 0: first time seen, keep the evidence (#a11)
+            log('pawbby: dp 107 byte 7 is not 0, visit read as ' .. secs .. ' s [' .. hexdump(s) .. ']')
+          end
           if w then
             pawbby.visit107w = w
             local who = recordcat(w, s, secs)
@@ -1787,7 +1841,16 @@ while socket.gettime() < deadline do
         elseif key == '116' and FLAG_STATES[s] then
           -- keep the machine state for presence and the stuck timer
           pawbby.last[key] = prev
-          flagstate(s, now)
+          --[[ Restoring the machine state above means the change filter
+               cannot see a repeated flag, so the flags get their own filter:
+               the last flag of each family (collect_, toilet_, cat_litter_,
+               cat_enter_) (code review 2026-11-18, T3-PAWBBY #a3). ]]
+          local fam = s:match('^cat_litter_') or s:match('^cat_enter_') or s:match('^[^_]+_') or s
+          pawbby.lastflag = pawbby.lastflag or {}
+          if pawbby.lastflag[fam] ~= s then
+            pawbby.lastflag[fam] = s
+            flagstate(s, now)
+          end
 
         elseif key == '116' then
           pawbby.statesince = now
@@ -1896,7 +1959,8 @@ while socket.gettime() < deadline do
                broadcasts when something is actually wrong (the liner jam
                produced no state change), so this is how we catch it. ]]
           log('pawbby: NEW dp ' .. key .. ' = ' .. s .. ' [' .. hexdump(s) .. ']')
-          alert('PAWBBY new datapoint ' .. key .. ' = ' .. s:sub(1, 60))
+          -- no separate alert() here: raisealert below already writes the LM
+          -- alert list, limited by its repeat key (code review 2026-11-18, T3-PAWBBY #own-1)
           raisealert(2, 'newdp:' .. key, 'The litter box sent an unknown message, possibly a fault.',
             'system', 'DP ' .. key .. ' = ' .. s:sub(1, 120) .. ' [' .. hexdump(s):sub(1, 100) .. ']',
             acode('box.unknown_dp', 'dp', key))

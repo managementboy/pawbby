@@ -1,0 +1,6 @@
+{
+  "repository": "managementboy/pawbby",
+  "visibility": "public",
+  "worktree_snapshots": "preservation/2026-11-21-*",
+  "publication_rule": "Commit and push reviewed source to this project repository. Keep credentials, runtime captures, personal records, backups, and generated output local. Preserve unfinished work on a preservation branch."
+}

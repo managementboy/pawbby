@@ -744,4 +744,101 @@ check(logged('guess accuracy Charlie 15/20 = 75%'), 'accuracy logged')
 check(objects['32/3/38'] == 'None' and objects['32/3/39'] == '-' and objects['32/3/43'] == 0, 'empty queue shows None')
 dump('pee poo')
 
+
+------------------------- 18. code review 2026-11-18 (T3-PAWBBY fixes) ------
+local function count(text)
+  local n = 0
+  for _, l in ipairs(logs) do if l:find(text, 1, true) then n = n + 1 end end
+  return n
+end
+
+-- #a3: a repeated identical DP 116 flag is handled once
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } }, { { ['116'] = 'collect_full' } }, idle,
+  { { ['116'] = 'collect_full' } }, { { ['116'] = 'cat_litter_little' } }, { { ['116'] = 'collect_full' } } })
+check(count('flag collect_full') == 1, '#a3 repeated flag handled once (got ' .. count('flag collect_full') .. ')')
+check(count('flag cat_litter_little') == 1, '#a3 other flag family still handled')
+run({ { { ['116'] = 'collect_normal' } }, { { ['116'] = 'collect_full' } } })
+check(count('flag collect_full') == 2, '#a3 a new full after normal is handled again')
+
+-- #a6: a non-string pawbby_cmd is logged, no crash
+store.pawbby_cmd = 42
+run({ idle })
+check(logged('pawbby_cmd ignored, not a string: number') and store.pawbby_cmd == nil, '#a6 non-string command')
+
+-- #a11: visit seconds over 255 (byte 7 not 0) read as 16 bit and logged
+store.pawbby_samples = nil
+run({ { { ['116'] = 'cat_enter' } }, { { ['112'] = 2342 + 5300 } },
+  { { ['107'] = b64enc(string.char(1, 0, 0, 5, 20, 180, 1, 44, 0)) } }, { { ['112'] = 2342 } },
+  { { ['116'] = 'cat_near_leave' } }, idle, idle, idle, idle, { { ['116'] = 'work_idle' } } })
+local s300 = store.pawbby_samples and store.pawbby_samples[#store.pawbby_samples]
+check(s300 and s300.s == 300, '#a11 visit seconds 01 2c = 300 (got ' .. tostring(s300 and s300.s) .. ')')
+check(logged('dp 107 byte 7 is not 0, visit read as 300 s'), '#a11 bytes logged')
+
+-- #own-1: an unknown DP writes the LM alert list once, not twice
+alerts = {}
+run({ { { ['199'] = 'xyz' } } })
+local nnew = 0
+for _, a in ipairs(alerts) do if a:find('unknown message', 1, true) or a:find('new datapoint', 1, true) then nnew = nnew + 1 end end
+check(nnew == 1, '#own-1 one LM alert for a new DP (got ' .. nnew .. ')')
+
+-- #a7: the visit window closes while the box is offline
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } }, { { ['116'] = 'cat_enter' } },
+  { { ['112'] = 2342 + 4200 } }, { { ['112'] = 2342 } }, { { ['116'] = 'cat_near_leave' } } })
+check(pawbby.settle ~= nil, '#a7 settle timer armed')
+dev.connected = function() return false end
+dev.connect = function() return nil, 'connect: Network unreachable' end
+for _ = 1, 12 do run({ idle }) end
+check(pawbby.settle == nil and #(store.pawbby_visitlog or {}) == 1, '#a7 visit finished while offline')
+dev.connected = function() return true end
+
+-- #b1: while cleaning, a repeating alert is held once; a full list evicts the
+-- oldest lowest entry, never a higher level for a lower one
+world()
+objects['32/7/20'] = true
+dev.connected = function() return false end
+for _ = 1, 40 * 12 do run({ idle }) end
+local nofl = 0
+for _, a in ipairs(store.pawbby_held or {}) do if a.key == 'offline' then nofl = nofl + 1 end end
+check(nofl == 1, '#b1 repeating alert held once (got ' .. nofl .. ')')
+check(store.pawbby_held[1].text:find('40 minutes', 1, true) ~= nil or store.pawbby_held[1].text:find('39 minutes', 1, true) ~= nil,
+  '#b1 held entry is the newest text (' .. store.pawbby_held[1].text .. ')')
+dev.connected = function() return true end
+local function fill(levels)
+  local h = {}
+  for i, l in ipairs(levels) do h[i] = { level = l, key = 'k' .. i, text = 'held ' .. i, feed = 'system' } end
+  store.pawbby_held = h
+end
+local twenty2 = {}
+for i = 1, 20 do twenty2[i] = 2 end
+fill(twenty2)
+objects['32/3/34'] = true            -- test alert, level 1
+run({ idle })
+check(#store.pawbby_held == 20 and logged('held list full of higher alerts, not held: Test alert'),
+  '#b1 a level 1 alert does not evict level 2')
+local mixed = {}
+for i = 1, 20 do mixed[i] = 2 end
+mixed[5], mixed[9] = 1, 1
+fill(mixed)
+objects['32/3/34'] = true
+run({ idle })
+local h = store.pawbby_held
+check(#h == 20 and h[5].text == 'held 6' and h[20].text:find('Test alert', 1, true) ~= nil,
+  '#b1 the oldest level 1 entry made room')
+objects['32/7/20'] = false
+
+-- #b-N3: a day without a weighing does not repeat the weight alert
+world()
+run({ { { ['112'] = 2342, ['116'] = 'work_idle' } } })
+store.pawbby_daily = {}
+for d = 1, 6 do store.pawbby_daily[d] = { d = 'day' .. d, Isma = { v = 2, w = 5300 }, Charlie = { v = 2, w = 4100 } } end
+store.pawbby_daily[7] = { d = 'day7', Isma = { v = 2, w = 4880 }, Charlie = { v = 2, w = 4100 } }
+store.pawbby_daily[8] = { d = 'day8', Isma = { v = 2, w = 4890 }, Charlie = { v = 2, w = 4100 } }
+store.pawbby_dayweights = { Charlie = { 4100 } }   -- Isma visited, not weighed
+store.pawbby_catvisits = { Isma = 2, Charlie = 2 }
+clock = clock + 86400
+run({ idle })
+check(not logged('Isma wt -'), '#b-N3 no weight alert on a day without a weighing')
+
 print('ALL CHECKS PASSED')

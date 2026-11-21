@@ -53,3 +53,9 @@ A change is not done until it has been observed on the box:
 Lua 5.1 / LuaJIT 2.0. Comments explain *why*, not *what* — the reader is
 assumed to know Lua but not this device's quirks. Keep labels written to
 `32/3/2` at 14 characters or fewer; DPT 16 truncates silently.
+
+## GitHub source publication
+
+Owner instruction, November 21, 2026: publish this project source to `managementboy/pawbby`. This repository is public. FarmSync and Pawbby are the public exceptions; other project repositories are private.
+
+Commit reviewed source and push it before reporting completed development. Preserve unfinished work on a named preservation branch without treating it as tested or released. Keep credentials, personal records, browser state, device backups, and generated output local. Check the destination and visibility before pushing. Preserve unrelated work and other active sessions.
